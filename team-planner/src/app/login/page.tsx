@@ -7,7 +7,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
 
   return (
-    <section className="h-screen flex flex-col gap-5 items-center justify-center py-20">
+    <section className="h-screen flex flex-col justify-start items-start p-4 py-80">
       <form
         onSubmit={e => {
           e.preventDefault()
