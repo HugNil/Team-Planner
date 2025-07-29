@@ -35,7 +35,7 @@ export default function LoginPage() {
         </button>
         <div className="flex justify-between items-center text-sm">
           <p className="flex flex-row">
-            <span className="text-black">Don't have an account?&nbsp;&nbsp;</span> <a href="/join-request" className="text-blue-600">Join us!</a>
+            <span className="text-black whitespace-pre">Don't have an account?  </span> <a href="/join-request" className="text-blue-600">Join us!</a>
           </p>
           <a href="/" className="text-blue-600">Back</a>
         </div>

@@ -13,6 +13,7 @@ export default function JoinRequestPage() {
       body: JSON.stringify({ email, name })
     })
     alert('Your account has been created!')
+    window.location.href = '/'
   }
 
   return (
