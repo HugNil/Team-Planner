@@ -14,6 +14,7 @@ model Club {
   admins   User[]        @relation("ClubAdmins")
   players  Player[]
   requests JoinRequest[]
+  users    User[]        @relation("ClubUsers")
 }
 
 model User {
@@ -22,7 +23,8 @@ model User {
   passwordHash String
   role         Role
   clubId       String?
-  club         Club?      @relation(fields: [clubId], references: [id])
+  club         Club?      @relation("ClubUsers", fields: [clubId], references: [id])
+  adminClubs   Club[]     @relation("ClubAdmins")
 }
 
 model Player {
@@ -39,6 +41,7 @@ model JoinRequest {
   email     String
   name      String?
   clubId    String
+  club      Club          @relation(fields: [clubId], references: [id])
   status    RequestStatus @default(PENDING)
   createdAt DateTime      @default(now())
 }
