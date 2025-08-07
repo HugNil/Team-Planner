@@ -18,7 +18,7 @@ export default function JoinRequestPage() {
   }
 
   return (
-    <section className="h-screen flex flex-col justify-start items-start p-4 py-80">
+    <section className="h-[calc(100vh-5rem)] flex flex-col justify-start items-start p-4 py-60">
       <form onSubmit={handleSubmit} className="max-w-md mx-auto space-y-4">
         <h2 className="text-2xl font-semibold">Join us!</h2>
         <input
