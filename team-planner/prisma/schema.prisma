@@ -1,5 +1,5 @@
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url = env("DATABASE_URL")
 }
 
@@ -15,6 +15,7 @@ model Club {
   players  Player[]
   requests JoinRequest[]
   users    User[]        @relation("ClubUsers")
+  matches  Match[]
 }
 
 model User {
@@ -28,12 +29,13 @@ model User {
 }
 
 model Player {
-  id        String    @id @default(cuid())
-  firstName String
-  lastName  String
-  number    Int?
-  clubId    String
-  club      Club      @relation(fields: [clubId], references: [id])
+  id          String       @id @default(cuid())
+  firstName   String
+  lastName    String
+  number      Int?
+  clubId      String
+  club        Club         @relation(fields: [clubId], references: [id])
+  assignments Assignment[]
 }
 
 model JoinRequest {
@@ -44,6 +46,37 @@ model JoinRequest {
   club      Club          @relation(fields: [clubId], references: [id])
   status    RequestStatus @default(PENDING)
   createdAt DateTime      @default(now())
+}
+
+model Match {
+  id          String       @id @default(cuid())
+  homeTeam    String
+  awayTeam    String
+  date        DateTime
+  location    String?
+  clubId      String
+  club        Club         @relation(fields: [clubId], references: [id])
+  assignments Assignment[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Assignment {
+  id       String @id @default(cuid())
+  matchId  String
+  match    Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  position String?
+  status   AssignmentStatus @default(PENDING)
+  
+  @@unique([matchId, playerId])
+}
+
+enum AssignmentStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
 }
 
 enum Role {
