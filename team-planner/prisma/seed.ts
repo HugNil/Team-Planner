@@ -17,7 +17,7 @@ async function seedDatabase() {
 
     const club = await prisma.club.create({
       data: {
-        name: 'Testclub FC',
+        name: 'Testclub BK1',
         code: 'TEST',
       },
     });
@@ -36,15 +36,15 @@ async function seedDatabase() {
       prisma.player.create({
         data: {
           firstName: 'Anna',
-          lastName: 'Karlsson',
+          lastName: 'Nilsson',
           number: 7,
           clubId: club.id,
         },
       }),
       prisma.player.create({
         data: {
-          firstName: 'Johan',
-          lastName: 'Lindberg',
+          firstName: 'Lars',
+          lastName: 'Johansson',
           number: 21,
           clubId: club.id,
         },
@@ -56,6 +56,22 @@ async function seedDatabase() {
           clubId: club.id,
         },
       }),
+      prisma.player.create({
+        data: {
+          firstName: 'Johan',
+          lastName: 'Karlsson',
+          number: 15,
+          clubId: club.id,
+        },
+      }),
+      prisma.player.create({
+        data: {
+          firstName: 'Emma',
+          lastName: 'Lindberg',
+          number: 3,
+          clubId: club.id,
+        },
+      }),
     ]);
 
     console.log(`Created ${players.length} players`);
@@ -63,19 +79,28 @@ async function seedDatabase() {
     const matches = await Promise.all([
       prisma.match.create({
         data: {
-          homeTeam: 'Testclub FC',
-          awayTeam: 'Rival FC',
+          homeTeam: 'BK Allön',
+          awayTeam: 'Femtionian',
           date: new Date('2025-08-15T19:00:00'),
-          location: 'Hemmaplan',
+          location: 'Bowlinghallen Kristianstad',
           clubId: club.id,
         },
       }),
       prisma.match.create({
         data: {
-          homeTeam: 'Champions United',
-          awayTeam: 'Testclub FC',
+          homeTeam: 'Femtionian',
+          awayTeam: 'BK Allön',
           date: new Date('2025-08-22T15:00:00'),
-          location: 'Bortaplan',
+          location: 'Turbanhallen Hässleholm',
+          clubId: club.id,
+        },
+      }),
+      prisma.match.create({
+        data: {
+          homeTeam: 'Kulladals BS',
+          awayTeam: 'BK Allön',
+          date: new Date('2025-08-29T18:30:00'),
+          location: 'Baltiska Bowlinghallen Malmö',
           clubId: club.id,
         },
       }),
@@ -88,7 +113,7 @@ async function seedDatabase() {
         data: {
           matchId: matches[0].id,
           playerId: players[0].id,
-          position: 'Forward',
+          position: 'Spelare 1',
           status: 'CONFIRMED',
         },
       }),
@@ -96,8 +121,32 @@ async function seedDatabase() {
         data: {
           matchId: matches[0].id,
           playerId: players[1].id,
-          position: 'Midfielder',
+          position: 'Spelare 2',
           status: 'PENDING',
+        },
+      }),
+      prisma.assignment.create({
+        data: {
+          matchId: matches[0].id,
+          playerId: players[2].id,
+          position: 'Spelare 3',
+          status: 'CONFIRMED',
+        },
+      }),
+      prisma.assignment.create({
+        data: {
+          matchId: matches[1].id,
+          playerId: players[0].id,
+          position: 'Spelare 1',
+          status: 'PENDING',
+        },
+      }),
+      prisma.assignment.create({
+        data: {
+          matchId: matches[1].id,
+          playerId: players[3].id,
+          position: 'Spelare 2',
+          status: 'CONFIRMED',
         },
       }),
     ]);
@@ -106,8 +155,8 @@ async function seedDatabase() {
 
     const joinRequest = await prisma.joinRequest.create({
       data: {
-        email: 'newplayer@example.com',
-        name: 'Nya Spelaren',
+        email: 'nybowlare@example.com',
+        name: 'Peter Bowlsson',
         clubId: club.id,
         status: 'PENDING',
       },
@@ -115,7 +164,7 @@ async function seedDatabase() {
 
     console.log(`Created join request for: ${joinRequest.name}`);
 
-    console.log('🎉 Database seeded successfully!');
+    console.log('Database seeded successfully!');
     console.log(`\nTest data created:`);
     console.log(`- Club: ${club.name} (code: ${club.code})`);
     console.log(`- Players: ${players.length}`);
