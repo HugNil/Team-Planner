@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient() as any;
 
@@ -15,6 +16,7 @@ async function seedDatabase() {
     await prisma.club.deleteMany();
     console.log('Database cleaned');
 
+    // Create a test club
     const club = await prisma.club.create({
       data: {
         name: 'Testclub BK1',
@@ -23,6 +25,42 @@ async function seedDatabase() {
     });
 
     console.log(`Created club: ${club.name} (${club.code})`);
+
+    // Create admin user
+    const hashedPassword = await bcrypt.hash('admin123', 12);
+    const adminUser = await prisma.user.create({
+      data: {
+        email: 'admin@test.com',
+        passwordHash: hashedPassword,
+        role: 'SUPERADMIN',
+        clubId: club.id,
+      },
+    });
+
+    console.log(`Created admin user: ${adminUser.email}`);
+
+    // Create regular user
+    const regularHashedPassword = await bcrypt.hash('user123', 12);
+    const regularUser = await prisma.user.create({
+      data: {
+        email: 'user@test.com',
+        passwordHash: regularHashedPassword,
+        role: 'SELECTOR',
+        clubId: club.id,
+      },
+    });
+
+    console.log(`Created regular user: ${regularUser.email}`);
+
+    // Add admin to club's admin relationship
+    await prisma.club.update({
+      where: { id: club.id },
+      data: {
+        admins: {
+          connect: { id: adminUser.id }
+        }
+      }
+    });
 
     const players = await Promise.all([
       prisma.player.create({

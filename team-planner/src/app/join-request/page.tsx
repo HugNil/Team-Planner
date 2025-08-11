@@ -18,8 +18,8 @@ export default function JoinRequestPage() {
   }
 
   return (
-    <section className="h-[calc(100vh-5rem)] flex flex-col justify-start items-start p-4 py-60">
-      <form onSubmit={handleSubmit} className="max-w-md mx-auto space-y-4">
+    <section className="h-[calc(100vh-5rem)] flex flex-col items-center justify-center p-4 bg-gray-200">
+      <form onSubmit={handleSubmit} className="max-w-md w-full space-y-4 bg-white p-6 rounded shadow">
         <h2 className="text-2xl font-semibold">Join us!</h2>
         <input
           type="email"
@@ -42,7 +42,7 @@ export default function JoinRequestPage() {
           onChange={e => setPassword(e.target.value)}
           className="w-full p-2 border rounded"
         />
-        <button type="submit" className="w-full py-2 bg-transparent border-2 border-black text-black font-semibold rounded hover:bg-green-500 transition-colors duration-500">
+        <button type="submit" className="w-full py-2 bg-transparent border-2 border-black text-black font-semibold rounded transition-transform duration-500 hover:scale-105">
           Create account
         </button>
         <p className="text-sm flex justify-end">
