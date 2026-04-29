@@ -41,6 +41,7 @@ model Player {
   id          String       @id @default(cuid())
   firstName   String
   lastName    String
+  nickname    String?
   number      Int?
   clubId      String
   club        Club         @relation(fields: [clubId], references: [id])

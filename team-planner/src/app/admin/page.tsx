@@ -4,7 +4,7 @@ import { signOut, useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type Player = { id: string; firstName: string; lastName: string; number: number | null };
+type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
 type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number };
 type Absence = { id: string; playerId: string; player: Player };
 type Match = { id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
@@ -34,6 +34,10 @@ function playerName(player: Player) {
   return `${player.firstName} ${player.lastName}`.trim();
 }
 
+function plannerName(player: Player) {
+  return player.nickname?.trim() || playerName(player);
+}
+
 export default function AdminPage() {
   const { status } = useSession();
   const router = useRouter();
@@ -42,9 +46,9 @@ export default function AdminPage() {
   const [tab, setTab] = useState<'players' | 'absence' | 'planner'>('players');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '' });
+  const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
-  const [playerEditForm, setPlayerEditForm] = useState({ firstName: '', lastName: '' });
+  const [playerEditForm, setPlayerEditForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '' });
   const [editingTeamId, setEditingTeamId] = useState('');
   const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '' });
@@ -112,7 +116,7 @@ export default function AdminPage() {
       return;
     }
 
-    setPlayerForm({ firstName: '', lastName: '' });
+    setPlayerForm({ firstName: '', lastName: '', nickname: '' });
     setMessage('Spelare tillagd.');
     await refreshAll();
   }
@@ -127,6 +131,7 @@ export default function AdminPage() {
     setPlayerEditForm({
       firstName: player.firstName,
       lastName: player.lastName,
+      nickname: player.nickname ?? '',
     });
   }
 
@@ -280,7 +285,7 @@ export default function AdminPage() {
 
   async function copyLineup(team: Team, lineup: Lineup | undefined) {
     const lines = [`Omg ${selectedRoundNumber}`, ''];
-    const playerBySlot = new Map((lineup?.players ?? []).map((item) => [item.sortOrder, playerName(item.player)]));
+    const playerBySlot = new Map((lineup?.players ?? []).map((item) => [item.sortOrder, plannerName(item.player)]));
 
     for (let index = 0; index < 8; index += 2) {
       const first = playerBySlot.get(index);
@@ -380,24 +385,26 @@ export default function AdminPage() {
           <div className="grid gap-5 lg:grid-cols-2">
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Spelare</h2>
-              <form onSubmit={handleAddPlayer} className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <form onSubmit={handleAddPlayer} className="mt-4 grid gap-2 md:grid-cols-2">
                 <input value={playerForm.firstName} onChange={(e) => setPlayerForm({ ...playerForm, firstName: e.target.value })} placeholder="Förnamn" className="rounded-md border border-slate-300 px-3 py-2" />
                 <input value={playerForm.lastName} onChange={(e) => setPlayerForm({ ...playerForm, lastName: e.target.value })} placeholder="Efternamn (valfritt)" className="rounded-md border border-slate-300 px-3 py-2" />
+                <input value={playerForm.nickname} onChange={(e) => setPlayerForm({ ...playerForm, nickname: e.target.value })} placeholder="Smeknamn" className="rounded-md border border-slate-300 px-3 py-2" />
                 <button className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
               </form>
-              <div className="mt-4 divide-y divide-slate-100">
+              <div className="mt-4 max-h-96 divide-y divide-slate-100 overflow-y-auto pr-2">
                 {overview.club.players.map((player) => (
                   <div key={player.id} className="py-3">
                     {editingPlayerId === player.id ? (
-                      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                      <div className="grid gap-2 md:grid-cols-2">
                         <input value={playerEditForm.firstName} onChange={(e) => setPlayerEditForm({ ...playerEditForm, firstName: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" />
                         <input value={playerEditForm.lastName} onChange={(e) => setPlayerEditForm({ ...playerEditForm, lastName: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" />
+                        <input value={playerEditForm.nickname} onChange={(e) => setPlayerEditForm({ ...playerEditForm, nickname: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" placeholder="Smeknamn" />
                         <button type="button" onClick={() => savePlayer(player.id)} className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Spara</button>
                         <button type="button" onClick={() => setEditingPlayerId('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Avbryt</button>
                       </div>
                     ) : (
                       <div className="flex items-center justify-between gap-3">
-                        <span>{playerName(player)}</span>
+                        <span>{playerName(player)}{player.nickname ? ` (${player.nickname})` : ''}</span>
                         <div className="flex gap-3">
                           <button onClick={() => startEditPlayer(player)} className="text-sm font-semibold text-slate-700">Ändra</button>
                           <button onClick={() => deletePlayer(player.id)} className="text-sm font-semibold text-red-700">Ta bort</button>
@@ -509,7 +516,7 @@ export default function AdminPage() {
                           onDragStart={(event) => event.dataTransfer.setData('playerId', player.id)}
                           className={`rounded-md border px-3 py-2 text-sm font-semibold ${absentAllRound ? 'cursor-not-allowed border-red-200 bg-red-50 text-red-800' : placed ? 'border-slate-200 bg-slate-100 text-slate-500' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
                         >
-                          {playerName(player)}
+                          {plannerName(player)}
                           {absentAllRound ? ' - frånvarande' : unavailableDays.length > 0 ? ` - kan inte ${unavailableDays.join(', ')}` : placed ? ' - placerad' : ''}
                         </div>
                       );
@@ -574,10 +581,10 @@ export default function AdminPage() {
                                         onDragStart={(event) => event.dataTransfer.setData('playerId', item.playerId)}
                                         className="flex items-center justify-between gap-2"
                                       >
-                                        <span>{playerName(item.player)}</span>
+                                        <span>{plannerName(item.player)}</span>
                                         <button
                                           onClick={() => playDay && removePlayer(item.playerId, team.id, playDay.id)}
-                                          aria-label={`Ta bort ${playerName(item.player)}`}
+                                          aria-label={`Ta bort ${plannerName(item.player)}`}
                                           title="Ta bort"
                                           className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50"
                                         >
@@ -604,10 +611,10 @@ export default function AdminPage() {
                                 onDragStart={(event) => event.dataTransfer.setData('playerId', playerBySlot.get(8)!.playerId)}
                                 className="flex items-center justify-between rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm"
                               >
-                                {playerName(playerBySlot.get(8)!.player)}
+                                {plannerName(playerBySlot.get(8)!.player)}
                                 <button
                                   onClick={() => playDay && removePlayer(playerBySlot.get(8)!.playerId, team.id, playDay.id)}
-                                  aria-label={`Ta bort ${playerName(playerBySlot.get(8)!.player)}`}
+                                  aria-label={`Ta bort ${plannerName(playerBySlot.get(8)!.player)}`}
                                   title="Ta bort"
                                   className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50"
                                 >

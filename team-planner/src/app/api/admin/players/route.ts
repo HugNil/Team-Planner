@@ -14,6 +14,7 @@ export async function POST(req: Request) {
 
     const firstName = String(body.firstName ?? '').trim();
     const lastName = String(body.lastName ?? '').trim();
+    const nickname = String(body.nickname ?? '').trim();
     const number = body.number ? Number(body.number) : null;
 
     if (!firstName) {
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
     }
 
     const player = await prisma.player.create({
-      data: { clubId, firstName, lastName, number },
+      data: { clubId, firstName, lastName, nickname: nickname || null, number },
     });
 
     return NextResponse.json(player, { status: 201 });
@@ -52,6 +53,7 @@ export async function PATCH(req: Request) {
       data: {
         firstName: String(body.firstName ?? player.firstName).trim(),
         lastName: String(body.lastName ?? player.lastName).trim(),
+        nickname: body.nickname === undefined ? player.nickname : String(body.nickname ?? '').trim() || null,
         number: body.number === undefined ? player.number : body.number === '' || body.number === null ? null : Number(body.number),
       },
     });

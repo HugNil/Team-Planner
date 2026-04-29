@@ -138,7 +138,9 @@ export default function Home() {
     }
 
     setData(payload);
-    setSelectedPlayerId((current) => current || payload.players[0]?.id || '');
+    setSelectedPlayerId((current) =>
+      current && payload.players.some((player: Player) => player.id === current) ? current : '',
+    );
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -334,6 +336,7 @@ export default function Home() {
                     onChange={(event) => setSelectedPlayerId(event.target.value)}
                     className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-950 outline-none transition focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
                   >
+                    <option value="">Välj spelare</option>
                     {data.players.map((player) => (
                       <option key={player.id} value={player.id}>
                         {playerName(player)}

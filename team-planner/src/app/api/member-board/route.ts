@@ -6,6 +6,10 @@ function normalizeCode(code: string | null) {
   return code?.trim() ?? '';
 }
 
+function isPublicClubId(value: string) {
+  return /^c[a-z0-9]{20,}$/i.test(value) || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 async function getClubFromCode(code: string | null) {
   const normalizedCode = normalizeCode(code);
 
@@ -13,14 +17,15 @@ async function getClubFromCode(code: string | null) {
     return null;
   }
 
-  return prisma.club.findFirst({
-    where: {
-      OR: [
-        { id: normalizedCode },
-        { code: normalizedCode.toUpperCase() },
-      ],
-    },
-  });
+  if (normalizedCode.toUpperCase() === 'TEST') {
+    return prisma.club.findUnique({ where: { code: 'TEST' } });
+  }
+
+  if (!isPublicClubId(normalizedCode)) {
+    return null;
+  }
+
+  return prisma.club.findUnique({ where: { id: normalizedCode } });
 }
 
 export async function GET(req: NextRequest) {
