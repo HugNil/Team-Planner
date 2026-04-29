@@ -54,6 +54,7 @@ export default function AdminPage() {
   const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '' });
   const [selectedRoundId, setSelectedRoundId] = useState('');
   const [planner, setPlanner] = useState<PlannerData | null>(null);
+  const [selectedPlannerPlayerId, setSelectedPlannerPlayerId] = useState('');
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
 
   useEffect(() => {
@@ -282,6 +283,63 @@ export default function AdminPage() {
     });
   }
 
+  function applyOptimisticAssign(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
+    setPlanner((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const player = current.players.find((item) => item.id === playerId);
+      const plan = current.teamPlans.find((item) => item.team.id === teamId && item.playDay?.id === playDayId);
+
+      if (!player || !plan) {
+        return current;
+      }
+
+      const baseLineup: Lineup = plan.lineup ?? {
+        id: `pending-${playDayId}-${teamId}`,
+        playDayId,
+        teamId,
+        team: plan.team,
+        coachName: null,
+        players: [],
+      };
+      const updatedLineup: Lineup = {
+        ...baseLineup,
+        players: [
+          ...baseLineup.players.filter((item) => item.playerId !== playerId && item.sortOrder !== sortOrder),
+          {
+            id: `pending-${playDayId}-${teamId}-${playerId}`,
+            playerId,
+            sortOrder,
+            player,
+          },
+        ].sort((a, b) => a.sortOrder - b.sortOrder),
+      };
+      const cleanLineup = (lineup: Lineup) => ({
+        ...lineup,
+        players: lineup.players.filter((item) => item.playerId !== playerId),
+      });
+      const lineups = current.lineups
+        .map(cleanLineup)
+        .filter((lineup) => lineup.id !== baseLineup.id);
+
+      lineups.push(updatedLineup);
+
+      return {
+        ...current,
+        lineups,
+        teamPlans: current.teamPlans.map((item) => {
+          if (item.team.id === teamId && item.playDay?.id === playDayId) {
+            return { ...item, lineup: updatedLineup };
+          }
+
+          return item.lineup ? { ...item, lineup: cleanLineup(item.lineup) } : item;
+        }),
+      };
+    });
+  }
+
   useEffect(() => {
     if (tab === 'planner' && selectedRoundId) {
       loadPlanner(selectedRoundId);
@@ -290,6 +348,9 @@ export default function AdminPage() {
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
     if (!playerId) return;
+    const previousPlanner = planner;
+    applyOptimisticAssign(playerId, teamId, playDayId, sortOrder);
+
     const response = await fetch('/api/admin/lineups', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -298,17 +359,22 @@ export default function AdminPage() {
     const payload = await response.json();
 
     if (!response.ok) {
+      setPlanner(previousPlanner);
       setError(payload.error ?? 'Kunde inte placera spelare');
       return;
     }
 
     setError('');
+    setSelectedPlannerPlayerId('');
     if (payload.lineup) {
       applyLineupUpdate(payload.lineup, playerId);
     }
   }
 
   async function removePlayer(playerId: string, teamId: string, playDayId: string) {
+    const previousPlanner = planner;
+    applyPlayerRemove(playerId);
+
     const response = await fetch('/api/admin/lineups', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -317,12 +383,12 @@ export default function AdminPage() {
     const payload = await response.json();
 
     if (!response.ok) {
+      setPlanner(previousPlanner);
       setError(payload.error ?? 'Kunde inte ta bort spelare');
       return;
     }
 
     setError('');
-    applyPlayerRemove(playerId);
   }
 
   async function saveCoach(teamId: string, playDayId: string, coachName: string) {
@@ -395,20 +461,20 @@ export default function AdminPage() {
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        <header className="mb-5 flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-          <div>
+      <div className="mx-auto max-w-7xl px-3 py-4 sm:px-6 sm:py-6">
+        <header className="mb-5 flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between">
+          <div className="min-w-0">
             <p className="text-sm font-semibold uppercase text-emerald-700">Admin</p>
-            <h1 className="text-3xl font-bold text-slate-950">{overview.club.name}</h1>
+            <h1 className="truncate text-2xl font-bold text-slate-950 sm:text-3xl">{overview.club.name}</h1>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex w-full flex-col gap-2 md:w-auto sm:flex-row">
             <select
               value={clubId}
               onChange={(event) => {
                 setClubId(event.target.value);
                 loadOverview(event.target.value);
               }}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold"
+              className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold md:w-auto"
             >
               {overview.clubs.map((club) => (
                 <option key={club.id} value={club.id}>{club.name} ({club.role})</option>
@@ -464,9 +530,9 @@ export default function AdminPage() {
                         <button type="button" onClick={() => setEditingPlayerId('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Avbryt</button>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-between gap-3">
-                        <span>{playerName(player)}{player.nickname ? ` (${player.nickname})` : ''}</span>
-                        <div className="flex gap-3">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <span className="min-w-0 break-words">{playerName(player)}{player.nickname ? ` (${player.nickname})` : ''}</span>
+                        <div className="flex shrink-0 gap-3">
                           <button onClick={() => startEditPlayer(player)} className="text-sm font-semibold text-slate-700">Ändra</button>
                           <button onClick={() => deletePlayer(player.id)} className="text-sm font-semibold text-red-700">Ta bort</button>
                         </div>
@@ -479,7 +545,7 @@ export default function AdminPage() {
 
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Lag</h2>
-              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
                 <input value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} placeholder="A-lag, F-lag..." className="rounded-md border border-slate-300 px-3 py-2" />
                 <input value={teamForm.swebowlTeamId} onChange={(e) => setTeamForm({ ...teamForm, swebowlTeamId: e.target.value })} placeholder="Swebowl ID" className="rounded-md border border-slate-300 px-3 py-2" />
                 <button className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
@@ -495,12 +561,12 @@ export default function AdminPage() {
                         <button type="button" onClick={() => setEditingTeamId('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Avbryt</button>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
                           <p className="font-semibold">{team.name}</p>
                           <p className="text-sm text-slate-500">Swebowl: {team.swebowlTeamId || '-'}</p>
                         </div>
-                        <div className="flex gap-3">
+                        <div className="flex shrink-0 gap-3">
                           <button onClick={() => startEditTeam(team)} className="text-sm font-semibold text-slate-700">Ändra</button>
                           <button onClick={() => deleteTeam(team.id)} className="text-sm font-semibold text-red-700">Ta bort</button>
                         </div>
@@ -560,12 +626,16 @@ export default function AdminPage() {
             </section>
 
             {planner && (
-              <div className="grid gap-5 xl:grid-cols-[22rem_1fr]">
+              <div className="grid gap-5 xl:grid-cols-[20rem_1fr]">
                 <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                  <h2 className="text-xl font-bold">Spelarpool</h2>
-                  <div className="mt-4 space-y-2">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                    <h2 className="text-xl font-bold">Spelarpool</h2>
+                    <p className="text-xs font-semibold text-slate-500">Tryck spelare, tryck plats</p>
+                  </div>
+                  <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1 xl:max-h-none xl:overflow-visible xl:pr-0">
                     {planner.players.map((player) => {
                       const placed = placedPlayerIds.has(player.id);
+                      const selected = selectedPlannerPlayerId === player.id;
                       const unavailableDays = planner.days
                         .filter((day) => day.absences.some((absence) => absence.playerId === player.id))
                         .map((day) => dayFormatter.format(new Date(day.date)));
@@ -575,7 +645,8 @@ export default function AdminPage() {
                           key={player.id}
                           draggable={!absentAllRound}
                           onDragStart={(event) => event.dataTransfer.setData('playerId', player.id)}
-                          className={`rounded-md border px-3 py-2 text-sm font-semibold ${absentAllRound ? 'cursor-not-allowed border-red-200 bg-red-50 text-red-800' : placed ? 'border-slate-200 bg-slate-100 text-slate-500' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
+                          onClick={() => !absentAllRound && setSelectedPlannerPlayerId(selected ? '' : player.id)}
+                          className={`cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold ${selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : absentAllRound ? 'cursor-not-allowed border-red-200 bg-red-50 text-red-800' : placed ? 'border-slate-200 bg-slate-100 text-slate-500' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
                         >
                           {plannerName(player)}
                           {absentAllRound ? ' - frånvarande' : unavailableDays.length > 0 ? ` - kan inte ${unavailableDays.join(', ')}` : placed ? ' - placerad' : ''}
@@ -584,7 +655,7 @@ export default function AdminPage() {
                     })}
                   </div>
                 </section>
-                <section className="grid gap-4 lg:grid-cols-3">
+                <section className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
                   {planner.teamPlans.map((plan) => {
                     const { team, playDay, lineup, matches } = plan;
                     const lineupPlayers = lineup?.players ?? [];
@@ -594,14 +665,14 @@ export default function AdminPage() {
                         key={team.id}
                         className="min-h-64 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
                             <h2 className="text-xl font-bold">{team.name}</h2>
                             <p className="text-sm text-slate-500">
                               {playDay ? dayFormatter.format(new Date(playDay.date)) : 'Ingen match i omgången'}
                             </p>
                           </div>
-                          <button onClick={() => copyLineup(team, lineup ?? undefined)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold">
+                          <button onClick={() => copyLineup(team, lineup ?? undefined)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold sm:w-auto">
                             Kopiera lag
                           </button>
                         </div>
@@ -634,17 +705,21 @@ export default function AdminPage() {
                                     key={slot}
                                     onDragOver={(event) => event.preventDefault()}
                                     onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot)}
-                                    className={`min-h-14 rounded-md border px-3 py-2 text-sm ${item ? 'border-white bg-white font-semibold text-emerald-950 shadow-sm' : 'border-dashed border-emerald-200 bg-emerald-50 text-emerald-700'}`}
+                                    onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, slot)}
+                                    className={`min-h-14 min-w-0 rounded-md border px-2 py-2 text-sm sm:px-3 ${selectedPlannerPlayerId && !item ? 'cursor-pointer ring-2 ring-emerald-100' : ''} ${item ? 'border-white bg-white font-semibold text-emerald-950 shadow-sm' : 'border-dashed border-emerald-200 bg-emerald-50 text-emerald-700'}`}
                                   >
                                     {item ? (
                                       <div
                                         draggable
                                         onDragStart={(event) => event.dataTransfer.setData('playerId', item.playerId)}
-                                        className="flex items-center justify-between gap-2"
+                                        className="flex min-w-0 items-center justify-between gap-2"
                                       >
-                                        <span>{plannerName(item.player)}</span>
+                                        <span className="min-w-0 truncate">{plannerName(item.player)}</span>
                                         <button
-                                          onClick={() => playDay && removePlayer(item.playerId, team.id, playDay.id)}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            playDay && removePlayer(item.playerId, team.id, playDay.id);
+                                          }}
                                           aria-label={`Ta bort ${plannerName(item.player)}`}
                                           title="Ta bort"
                                           className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50"
@@ -663,18 +738,22 @@ export default function AdminPage() {
                           <div
                             onDragOver={(event) => event.preventDefault()}
                             onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, 8)}
-                            className="rounded-md border border-amber-200 bg-amber-50 p-2"
+                            onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, 8)}
+                            className={`rounded-md border border-amber-200 bg-amber-50 p-2 ${selectedPlannerPlayerId && !playerBySlot.get(8) ? 'cursor-pointer ring-2 ring-amber-100' : ''}`}
                           >
                             <p className="mb-2 text-xs font-semibold uppercase text-amber-800">Reserv</p>
                             {playerBySlot.get(8) ? (
                               <div
                                 draggable
                                 onDragStart={(event) => event.dataTransfer.setData('playerId', playerBySlot.get(8)!.playerId)}
-                                className="flex items-center justify-between rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm"
+                                className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm"
                               >
-                                {plannerName(playerBySlot.get(8)!.player)}
+                                <span className="min-w-0 truncate">{plannerName(playerBySlot.get(8)!.player)}</span>
                                 <button
-                                  onClick={() => playDay && removePlayer(playerBySlot.get(8)!.playerId, team.id, playDay.id)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    playDay && removePlayer(playerBySlot.get(8)!.playerId, team.id, playDay.id);
+                                  }}
                                   aria-label={`Ta bort ${plannerName(playerBySlot.get(8)!.player)}`}
                                   title="Ta bort"
                                   className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50"

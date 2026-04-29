@@ -274,7 +274,7 @@ export default function Home() {
             >
               ← Hem
             </a>
-            <p className="text-sm font-semibold text-slate-500">
+            <p className="shrink-0 text-sm font-semibold text-slate-500">
               {data.rounds.length} omgångar
             </p>
           </div>
@@ -310,7 +310,7 @@ export default function Home() {
                 <label htmlFor="clubCode" className="mt-5 block text-sm font-semibold text-slate-900">
                   Klubb-ID
                 </label>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                   <input
                     id="clubCode"
                     value={clubCode}
@@ -395,7 +395,7 @@ export default function Home() {
                         {roundFormatter.format(startsOn)} - {roundFormatter.format(endsOn)}
                       </p>
                         </div>
-                        <div className={`rounded-md px-3 py-2 text-sm font-semibold ${locked ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`}>
+                        <div className={`rounded-md px-3 py-2 text-sm font-semibold sm:max-w-xs ${locked ? 'bg-amber-50 text-amber-900' : 'bg-slate-50 text-slate-700'}`}>
                           {locked ? 'Deadline passerad - kontakta UK direkt' : `Sista dag: ${dayFormatter.format(deadline)}`}
                         </div>
                       </div>
@@ -409,7 +409,7 @@ export default function Home() {
 
                         return (
                           <section key={day.id} className={selectedIsAbsent ? 'bg-emerald-50/70' : 'bg-white'}>
-                            <label className={`flex cursor-pointer gap-3 px-4 py-4 ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}>
+                            <label className={`flex cursor-pointer gap-3 px-3 py-4 sm:px-4 ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}>
                               <input
                                 type="checkbox"
                                 checked={selectedIsAbsent}
@@ -435,7 +435,7 @@ export default function Home() {
                                 <div className="mt-3 space-y-1">
                                   {day.matches.map((match) => (
                                     <p key={match.id} className="text-sm text-slate-600">
-                                      {formatter.format(new Date(match.date))}: {match.homeTeam} - {match.awayTeam}
+                                      <span className="font-semibold">{formatter.format(new Date(match.date))}:</span> {match.homeTeam} - {match.awayTeam}
                                       {match.location ? `, ${match.location}` : ''}
                                     </p>
                                   ))}
