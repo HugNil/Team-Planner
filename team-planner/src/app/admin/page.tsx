@@ -24,7 +24,7 @@ type Overview = {
   };
 };
 type LineupPlayer = { id: string; playerId: string; sortOrder: number; player: Player };
-type Lineup = { id: string; team: Team; coachName: string | null; players: LineupPlayer[] };
+type Lineup = { id: string; playDayId: string; teamId: string; team: Team; coachName: string | null; players: LineupPlayer[] };
 type TeamPlan = { team: Team; playDay: PlayDay | null; matches: Match[]; lineup: Lineup | null };
 type PlannerData = { players: Player[]; teams: Team[]; playRound: PlayRound; days: PlayDay[]; lineups: Lineup[]; teamPlans: TeamPlan[] };
 
@@ -233,6 +233,55 @@ export default function AdminPage() {
     setPlanner(payload);
   }
 
+  function applyLineupUpdate(updatedLineup: Lineup, movedPlayerId?: string) {
+    setPlanner((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const cleanLineup = (lineup: Lineup) => ({
+        ...lineup,
+        players: movedPlayerId ? lineup.players.filter((item) => item.playerId !== movedPlayerId) : lineup.players,
+      });
+      const lineups = current.lineups
+        .map(cleanLineup)
+        .filter((lineup) => lineup.id !== updatedLineup.id);
+
+      lineups.push(updatedLineup);
+
+      return {
+        ...current,
+        lineups,
+        teamPlans: current.teamPlans.map((plan) => {
+          if (plan.lineup?.id === updatedLineup.id || (plan.team.id === updatedLineup.teamId && plan.playDay?.id === updatedLineup.playDayId)) {
+            return { ...plan, lineup: updatedLineup };
+          }
+
+          return plan.lineup ? { ...plan, lineup: cleanLineup(plan.lineup) } : plan;
+        }),
+      };
+    });
+  }
+
+  function applyPlayerRemove(playerId: string) {
+    setPlanner((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const cleanLineup = (lineup: Lineup) => ({
+        ...lineup,
+        players: lineup.players.filter((item) => item.playerId !== playerId),
+      });
+
+      return {
+        ...current,
+        lineups: current.lineups.map(cleanLineup),
+        teamPlans: current.teamPlans.map((plan) => (plan.lineup ? { ...plan, lineup: cleanLineup(plan.lineup) } : plan)),
+      };
+    });
+  }
+
   useEffect(() => {
     if (tab === 'planner' && selectedRoundId) {
       loadPlanner(selectedRoundId);
@@ -254,16 +303,26 @@ export default function AdminPage() {
     }
 
     setError('');
-    await loadPlanner(selectedRoundId);
+    if (payload.lineup) {
+      applyLineupUpdate(payload.lineup, playerId);
+    }
   }
 
   async function removePlayer(playerId: string, teamId: string, playDayId: string) {
-    await fetch('/api/admin/lineups', {
+    const response = await fetch('/api/admin/lineups', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clubId, playDayId, teamId, playerId, action: 'remove' }),
     });
-    await loadPlanner(selectedRoundId);
+    const payload = await response.json();
+
+    if (!response.ok) {
+      setError(payload.error ?? 'Kunde inte ta bort spelare');
+      return;
+    }
+
+    setError('');
+    applyPlayerRemove(playerId);
   }
 
   async function saveCoach(teamId: string, playDayId: string, coachName: string) {
@@ -280,7 +339,9 @@ export default function AdminPage() {
     }
 
     setError('');
-    await loadPlanner(selectedRoundId);
+    if (payload.lineup) {
+      applyLineupUpdate(payload.lineup);
+    }
   }
 
   async function copyLineup(team: Team, lineup: Lineup | undefined) {

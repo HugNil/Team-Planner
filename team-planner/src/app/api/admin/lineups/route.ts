@@ -150,14 +150,21 @@ export async function PATCH(req: Request) {
     }
 
     if (action === 'coach') {
-      await prisma.lineup.upsert({
+      const lineup = await prisma.lineup.upsert({
         where: {
           playDayId_teamId: { playDayId, teamId },
         },
         create: { clubId, playDayId, teamId, coachName: coachName || null },
         update: { coachName: coachName || null },
+        include: {
+          team: true,
+          players: {
+            include: { player: true },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
       });
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, lineup });
     }
 
     if (!player || player.clubId !== clubId) {
@@ -175,7 +182,7 @@ export async function PATCH(req: Request) {
           lineup: { playDayId, clubId },
         },
       });
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, playerId });
     }
 
     let absent = false;
@@ -221,7 +228,18 @@ export async function PATCH(req: Request) {
       },
     });
 
-    return NextResponse.json({ ok: true });
+    const updatedLineup = await prisma.lineup.findUnique({
+      where: { id: lineup.id },
+      include: {
+        team: true,
+        players: {
+          include: { player: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    return NextResponse.json({ ok: true, lineup: updatedLineup, playerId });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
