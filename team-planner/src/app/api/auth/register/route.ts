@@ -4,8 +4,15 @@ import { Role } from '@prisma/client';
 
 export async function POST(request: NextRequest) {
   try {
+    if (process.env.ALLOW_PUBLIC_REGISTRATION !== 'true') {
+      return NextResponse.json(
+        { error: 'Registration is disabled' },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
-    const { email, password, role, clubId } = body;
+    const { email, password, clubId } = body;
 
     // Validate required fields
     if (!email || !password) {
@@ -36,7 +43,7 @@ export async function POST(request: NextRequest) {
     const user = await authService.createUser({
       email,
       password,
-      role: role as Role || Role.SELECTOR,
+      role: Role.SELECTOR,
       clubId
     });
 

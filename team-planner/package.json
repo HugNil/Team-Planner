@@ -5,9 +5,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
     "lint": "next lint",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:prod": "tsx prisma/seed-production.ts",
+    "admin:create": "tsx scripts/create-admin.ts",
     "db:reset": "npx prisma db push --force-reset && npm run db:seed"
   },
   "dependencies": {

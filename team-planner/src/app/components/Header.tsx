@@ -1,46 +1,19 @@
-'use client';
-
 import Link from 'next/link';
-import { useSession, signOut } from 'next-auth/react';
 
 export default function Header() {
-  const { data: session, status } = useSession();
-  const isLoggedIn = status === 'authenticated' && session?.user;
-
   return (
-    <>
-      <nav className="h-20 w-full bg-transparent shadow p-10 flex justify-between items-center align-middle">
-        <Link href="/"><h1 className="text-4xl font-bold transition-transform duration-500 hover:scale-105">TeamPlanner</h1></Link>
-        <ul className="flex flex-row gap-6 p-6">
-          {isLoggedIn && (
-            <>
-              <li className="text-xl transition-transform duration-500 hover:scale-105"><Link href="/builder">PLANNER</Link></li>
-              <li className="text-xl transition-transform duration-500 hover:scale-105"><Link href="/schedule">MATCHES</Link></li>
-              {session.user.isAdmin && (
-                <li className="text-xl transition-transform duration-500 hover:scale-105"><Link href="/admin">ADMIN</Link></li>
-              )}
-            </>
-          )}
-          <li>
-            {isLoggedIn ? (
-                <div className="flex items-center gap-4 ">
-                  <Link className='text-xl transition-transform duration-500 hover:scale-105' href="/profile">PROFILE</Link>
-                  <button
-                    onClick={() => signOut({ callbackUrl: '/' })}
-                    className="text-sm bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 transition-transform duration-500 hover:scale-105"
-                  >
-                    SIGN OUT
-                  </button>
-                </div>
-            ) : (
-              <div className="flex items-center gap-4 ">
-                <Link className='text-xl transition-transform duration-500 hover:scale-105' href="/login">LOGIN</Link>
-                <Link className='text-xl transition-transform duration-500 hover:scale-105' href="/register">REGISTER</Link>
-              </div>
-            )}
-          </li>
-        </ul>
+    <header className="border-b border-slate-200 bg-white/85 backdrop-blur">
+      <nav className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-4 sm:px-6">
+        <Link href="/" className="text-lg font-semibold tracking-normal text-slate-950">
+          Klubbens Bowlingplan
+        </Link>
+        <a
+          href="#omgangar"
+          className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-900 hover:text-slate-950"
+        >
+          Omgångar
+        </a>
       </nav>
-    </>
+    </header>
   );
 }

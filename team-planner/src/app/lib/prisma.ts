@@ -1,14 +1,17 @@
-const { PrismaClient } = require('@prisma/client');
-
-type PrismaClientType = typeof PrismaClient;
+import { PrismaClient } from '@prisma/client';
 
 declare global {
-  var __prisma: InstanceType<PrismaClientType> | undefined;
+  // Allow a global var for dev to avoid creating multiple clients during HMR
+  // eslint-disable-next-line no-var
+  var __prisma: PrismaClient | undefined;
 }
 
-export const prisma = 
-  global.__prisma || new PrismaClient({ log: ['query'] });
+// Use `globalThis` to be safe across environments and avoid bundler/global issues.
+// Cast to `any` when accessing the global to avoid TS issues in some configs.
+const client = (globalThis as any).__prisma ?? new PrismaClient({ log: ['query'] });
 
-if(process.env.NODE_ENV === 'development') {
-  global.__prisma = prisma;
+if (process.env.NODE_ENV === 'development') {
+  (globalThis as any).__prisma = client;
 }
+
+export const prisma = client;

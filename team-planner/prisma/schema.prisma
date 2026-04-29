@@ -8,14 +8,22 @@ generator client {
 }
 
 model Club {
-  id       String        @id @default(cuid())
-  name     String        @unique
-  code     String        @unique
-  admins   User[]        @relation("ClubAdmins")
-  players  Player[]
-  requests JoinRequest[]
-  users    User[]        @relation("ClubUsers")
-  matches  Match[]
+  id             String        @id @default(cuid())
+  name           String        @unique
+  code           String        @unique
+  swebowlClub    String?
+  swebowlSeason  Int?
+  swebowlTeamIds String?
+  admins         User[]        @relation("ClubAdmins")
+  players        Player[]
+  requests       JoinRequest[]
+  users          User[]        @relation("ClubUsers")
+  matches        Match[]
+  playRounds     PlayRound[]
+  playDays       PlayDay[]
+  memberships    ClubMembership[]
+  teams          Team[]
+  lineups        Lineup[]
 }
 
 model User {
@@ -26,6 +34,7 @@ model User {
   clubId       String?
   club         Club?      @relation("ClubUsers", fields: [clubId], references: [id])
   adminClubs   Club[]     @relation("ClubAdmins")
+  memberships  ClubMembership[]
 }
 
 model Player {
@@ -36,6 +45,9 @@ model Player {
   clubId      String
   club        Club         @relation(fields: [clubId], references: [id])
   assignments Assignment[]
+  absences    Absence[]
+  dayAbsences DayAbsence[]
+  lineupSpots LineupPlayer[]
 }
 
 model JoinRequest {
@@ -49,16 +61,24 @@ model JoinRequest {
 }
 
 model Match {
-  id          String       @id @default(cuid())
-  homeTeam    String
-  awayTeam    String
-  date        DateTime
-  location    String?
-  clubId      String
-  club        Club         @relation(fields: [clubId], references: [id])
-  assignments Assignment[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id             String       @id @default(cuid())
+  homeTeam       String
+  awayTeam       String
+  date           DateTime
+  location       String?
+  source         MatchSource  @default(MANUAL)
+  externalId     String?
+  sourceTeamName String?
+  clubId         String
+  club           Club         @relation(fields: [clubId], references: [id])
+  assignments    Assignment[]
+  absences       Absence[]
+  playDay        PlayDay?     @relation(fields: [playDayId], references: [id], onDelete: SetNull)
+  playDayId      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([clubId, externalId])
 }
 
 model Assignment {
@@ -71,6 +91,117 @@ model Assignment {
   status   AssignmentStatus @default(PENDING)
   
   @@unique([matchId, playerId])
+}
+
+model Absence {
+  id        String   @id @default(cuid())
+  matchId   String
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchId, playerId])
+}
+
+model PlayRound {
+  id          String    @id @default(cuid())
+  clubId      String
+  club        Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  roundKey    String
+  title       String
+  startsOn    DateTime
+  endsOn      DateTime
+  days        PlayDay[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([clubId, roundKey])
+}
+
+model PlayDay {
+  id          String       @id @default(cuid())
+  clubId      String
+  club        Club         @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playRoundId String
+  playRound   PlayRound    @relation(fields: [playRoundId], references: [id], onDelete: Cascade)
+  dateKey     String
+  date        DateTime
+  matches     Match[]
+  absences    DayAbsence[]
+  lineups     Lineup[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([clubId, dateKey])
+}
+
+model DayAbsence {
+  id        String   @id @default(cuid())
+  playDayId String
+  playDay   PlayDay  @relation(fields: [playDayId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([playDayId, playerId])
+}
+
+model ClubMembership {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clubId    String
+  club      Club           @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  role      ClubMemberRole
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([userId, clubId])
+}
+
+model Team {
+  id            String   @id @default(cuid())
+  clubId        String
+  club          Club     @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  name          String
+  swebowlTeamId String?
+  sortOrder     Int      @default(0)
+  lineups       Lineup[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clubId, name])
+}
+
+model Lineup {
+  id        String         @id @default(cuid())
+  clubId    String
+  club      Club           @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  playDayId String
+  playDay   PlayDay        @relation(fields: [playDayId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  coachName String?
+  players   LineupPlayer[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([playDayId, teamId])
+}
+
+model LineupPlayer {
+  id        String   @id @default(cuid())
+  lineupId  String
+  lineup    Lineup   @relation(fields: [lineupId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@unique([lineupId, playerId])
 }
 
 enum AssignmentStatus {
@@ -89,4 +220,14 @@ enum RequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum ClubMemberRole {
+  ADMIN
+  UK
+}
+
+enum MatchSource {
+  MANUAL
+  SWEBOWL
 }

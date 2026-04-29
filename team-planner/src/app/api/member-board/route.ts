@@ -1,0 +1,221 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/app/lib/prisma';
+import { getPlayDayKey, getPlayRoundInfo, isAbsenceDeadlinePassed } from '@/app/lib/rounds';
+
+function normalizeCode(code: string | null) {
+  return code?.trim() ?? '';
+}
+
+async function getClubFromCode(code: string | null) {
+  const normalizedCode = normalizeCode(code);
+
+  if (!normalizedCode) {
+    return null;
+  }
+
+  return prisma.club.findFirst({
+    where: {
+      OR: [
+        { id: normalizedCode },
+        { code: normalizedCode.toUpperCase() },
+      ],
+    },
+  });
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const club = await getClubFromCode(searchParams.get('code'));
+
+    if (!club) {
+      return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
+    }
+
+    const [matches, players] = await Promise.all([
+      prisma.match.findMany({
+        where: { clubId: club.id },
+        include: {
+          absences: {
+            include: {
+              player: true,
+            },
+            orderBy: {
+              player: {
+                firstName: 'asc',
+              },
+            },
+          },
+        },
+        orderBy: { date: 'asc' },
+      }),
+      prisma.player.findMany({
+        where: { clubId: club.id },
+        orderBy: [
+          { firstName: 'asc' },
+          { lastName: 'asc' },
+        ],
+      }),
+    ]);
+
+    for (const match of matches) {
+      if (match.playDayId) {
+        continue;
+      }
+
+      const dateKey = getPlayDayKey(match.date);
+      const roundInfo = getPlayRoundInfo(match.date);
+      const playRound = await prisma.playRound.upsert({
+        where: {
+          clubId_roundKey: {
+            clubId: club.id,
+            roundKey: roundInfo.roundKey,
+          },
+        },
+        create: {
+          clubId: club.id,
+          roundKey: roundInfo.roundKey,
+          title: roundInfo.title,
+          startsOn: roundInfo.startsOn,
+          endsOn: roundInfo.endsOn,
+        },
+        update: {
+          startsOn: roundInfo.startsOn,
+          endsOn: roundInfo.endsOn,
+        },
+      });
+      const playDay = await prisma.playDay.upsert({
+        where: {
+          clubId_dateKey: {
+            clubId: club.id,
+            dateKey,
+          },
+        },
+        create: {
+          clubId: club.id,
+          playRoundId: playRound.id,
+          dateKey,
+          date: new Date(`${dateKey}T00:00:00`),
+        },
+        update: {
+          playRoundId: playRound.id,
+          date: new Date(`${dateKey}T00:00:00`),
+        },
+      });
+
+      await prisma.match.update({
+        where: { id: match.id },
+        data: { playDayId: playDay.id },
+      });
+    }
+
+    const rounds = await prisma.playRound.findMany({
+      where: { clubId: club.id },
+      include: {
+        days: {
+          include: {
+            matches: {
+              orderBy: { date: 'asc' },
+            },
+            absences: {
+              include: {
+                player: true,
+              },
+              orderBy: {
+                player: {
+                  firstName: 'asc',
+                },
+              },
+            },
+          },
+          orderBy: { date: 'asc' },
+        },
+      },
+      orderBy: { startsOn: 'asc' },
+    });
+    const visibleRounds = [];
+
+    for (const round of rounds) {
+      if (round.days.length > 0) {
+        visibleRounds.push(round);
+      }
+    }
+
+    return NextResponse.json({
+      club: {
+        id: club.id,
+        name: club.name,
+      },
+      rounds: visibleRounds,
+      matches,
+      players,
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const club = await getClubFromCode(body.code);
+    const playDayId = typeof body.playDayId === 'string' ? body.playDayId : '';
+    const playerId = typeof body.playerId === 'string' ? body.playerId : '';
+    const unavailable = Boolean(body.unavailable);
+
+    if (!club) {
+      return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
+    }
+
+    if (!playDayId || !playerId) {
+      return NextResponse.json({ error: 'playDayId och playerId krävs' }, { status: 400 });
+    }
+
+    const [playDay, player] = await Promise.all([
+      prisma.playDay.findFirst({ where: { id: playDayId, clubId: club.id }, include: { playRound: true } }),
+      prisma.player.findFirst({ where: { id: playerId, clubId: club.id } }),
+    ]);
+
+    if (!playDay || !player) {
+      return NextResponse.json({ error: 'Speldag eller spelare hittades inte' }, { status: 404 });
+    }
+
+    if (isAbsenceDeadlinePassed(playDay.playRound.startsOn)) {
+      return NextResponse.json({ error: 'Deadline har passerat. Kontakta UK direkt.' }, { status: 403 });
+    }
+
+    if (unavailable) {
+      const absence = await prisma.dayAbsence.upsert({
+        where: {
+          playDayId_playerId: {
+            playDayId,
+            playerId,
+          },
+        },
+        create: {
+          playDayId,
+          playerId,
+        },
+        update: {},
+        include: {
+          player: true,
+        },
+      });
+
+      return NextResponse.json({ absence });
+    }
+
+    await prisma.dayAbsence.deleteMany({
+      where: {
+        playDayId,
+        playerId,
+      },
+    });
+
+    return NextResponse.json({ absence: null });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
+  }
+}

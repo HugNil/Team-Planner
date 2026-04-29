@@ -3,6 +3,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import { authService } from './services/auth';
 
 export const authOptions: NextAuthOptions = {
+  secret: process.env.NEXTAUTH_SECRET ?? 'team-planner-local-dev-secret-change-before-production',
   providers: [
     CredentialsProvider({
       name: 'credentials',

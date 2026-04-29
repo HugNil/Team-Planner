@@ -1,8 +1,6 @@
 import bcrypt from 'bcryptjs';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import { Role } from '@prisma/client';
-
-const prisma = new PrismaClient();
 
 export interface CreateUserData {
   email: string;

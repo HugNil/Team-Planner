@@ -1,97 +1,80 @@
-'use client'
-import { signIn } from 'next-auth/react'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+'use client';
+
+import { signIn } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
+import { FormEvent, useState } from 'react';
 
 export default function LoginPage() {
-  const [formData, setFormData] = useState({
-    email: '',
-    password: ''
-  })
-  const [error, setError] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const router = useRouter()
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setIsLoading(true)
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setLoading(true);
 
-    try {
-      const result = await signIn('credentials', {
-        email: formData.email,
-        password: formData.password,
-        redirect: false
-      })
+    const result = await signIn('credentials', {
+      email,
+      password,
+      redirect: false,
+    });
 
-      if (result?.error) {
-        setError('Invalid email or password')
-      } else if (result?.ok) {
-        router.push('/builder')
-      }
-    } catch (error) {
-      setError('Network error. Please try again.')
-    } finally {
-      setIsLoading(false)
+    setLoading(false);
+
+    if (result?.error) {
+      setError('Fel e-post eller lösenord.');
+      return;
     }
-  }
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    })
+    router.push('/admin');
   }
 
   return (
-    <section className="h-[calc(100vh-5rem)] flex flex-col items-center justify-center p-4">
-      <form onSubmit={handleSubmit} className="max-w-md w-full space-y-4 bg-white p-6 rounded shadow">
-        <h2 className="text-2xl font-semibold">Sign in</h2>
-        
+    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-semibold uppercase text-emerald-700">Admin</p>
+        <h1 className="mt-2 text-3xl font-bold text-slate-950">Logga in</h1>
+        <p className="mt-2 text-sm text-slate-600">Administrera spelare, frånvaro och laguttagningar.</p>
+
         {error && (
-          <div className="text-red-600 text-sm bg-red-50 p-3 rounded">
+          <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800">
             {error}
           </div>
         )}
 
+        <label className="mt-5 block text-sm font-semibold text-slate-900" htmlFor="email">
+          E-post
+        </label>
         <input
+          id="email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
           type="email"
-          name="email"
-          placeholder="Email"
-          value={formData.email}
-          onChange={handleChange}
-          required
-          className="w-full p-2 border rounded"
-          disabled={isLoading}
+          className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
         />
-        
+
+        <label className="mt-4 block text-sm font-semibold text-slate-900" htmlFor="password">
+          Lösenord
+        </label>
         <input
+          id="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
           type="password"
-          name="password"
-          placeholder="Password"
-          value={formData.password}
-          onChange={handleChange}
-          required
-          className="w-full p-2 border rounded"
-          disabled={isLoading}
+          className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
         />
-        
-        <button 
-          type="submit" 
-          className="w-full px-6 py-2 bg-transparent border-2 border-black text-black font-semibold rounded hover:bg-green-400 transition-all duration-300 disabled:opacity-50"
-          disabled={isLoading}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="mt-5 w-full rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
         >
-          {isLoading ? 'Signing in...' : 'Sign in'}
+          {loading ? 'Loggar in' : 'Logga in'}
         </button>
-        
-        <div className="flex justify-between items-center text-sm">
-          <p className="flex flex-row">
-            <span className="text-black whitespace-pre">Don't have an account?  </span> 
-            <a href="/register" className="text-blue-600">Register!</a>
-          </p>
-          <a href="/" className="text-blue-600">Back</a>
-        </div>
       </form>
-    </section>
-  )
+    </main>
+  );
 }
