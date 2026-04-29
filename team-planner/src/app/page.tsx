@@ -188,7 +188,32 @@ export default function Home() {
         throw new Error(payload.error ?? 'Kunde inte spara ändringen');
       }
 
-      await loadBoard(activeCode);
+      setData((current) => {
+        if (!current) {
+          return current;
+        }
+
+        return {
+          ...current,
+          rounds: current.rounds.map((round) => ({
+            ...round,
+            days: round.days.map((day) => {
+              if (day.id !== playDayId) {
+                return day;
+              }
+
+              const absences = unavailable
+                ? [
+                    ...day.absences.filter((absence) => absence.playerId !== playerId),
+                    payload.absence,
+                  ].filter(Boolean)
+                : day.absences.filter((absence) => absence.playerId !== playerId);
+
+              return { ...day, absences };
+            }),
+          })),
+        };
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Något gick fel');
     } finally {

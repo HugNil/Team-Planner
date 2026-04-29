@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/app/lib/prisma';
-import { getPlayDayKey, getPlayRoundInfo, isAbsenceDeadlinePassed } from '@/app/lib/rounds';
+import { isAbsenceDeadlinePassed } from '@/app/lib/rounds';
 
 function normalizeCode(code: string | null) {
   return code?.trim() ?? '';
@@ -37,94 +37,45 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
     }
 
-    const [matches, players] = await Promise.all([
-      prisma.match.findMany({
-        where: { clubId: club.id },
-        include: {
-          absences: {
-            include: {
-              player: true,
-            },
-            orderBy: {
-              player: {
-                firstName: 'asc',
-              },
-            },
-          },
-        },
-        orderBy: { date: 'asc' },
-      }),
+    const [players, rounds] = await Promise.all([
       prisma.player.findMany({
         where: { clubId: club.id },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          number: true,
+        },
         orderBy: [
           { firstName: 'asc' },
           { lastName: 'asc' },
         ],
       }),
-    ]);
-
-    for (const match of matches) {
-      if (match.playDayId) {
-        continue;
-      }
-
-      const dateKey = getPlayDayKey(match.date);
-      const roundInfo = getPlayRoundInfo(match.date);
-      const playRound = await prisma.playRound.upsert({
-        where: {
-          clubId_roundKey: {
-            clubId: club.id,
-            roundKey: roundInfo.roundKey,
-          },
-        },
-        create: {
-          clubId: club.id,
-          roundKey: roundInfo.roundKey,
-          title: roundInfo.title,
-          startsOn: roundInfo.startsOn,
-          endsOn: roundInfo.endsOn,
-        },
-        update: {
-          startsOn: roundInfo.startsOn,
-          endsOn: roundInfo.endsOn,
-        },
-      });
-      const playDay = await prisma.playDay.upsert({
-        where: {
-          clubId_dateKey: {
-            clubId: club.id,
-            dateKey,
-          },
-        },
-        create: {
-          clubId: club.id,
-          playRoundId: playRound.id,
-          dateKey,
-          date: new Date(`${dateKey}T00:00:00`),
-        },
-        update: {
-          playRoundId: playRound.id,
-          date: new Date(`${dateKey}T00:00:00`),
-        },
-      });
-
-      await prisma.match.update({
-        where: { id: match.id },
-        data: { playDayId: playDay.id },
-      });
-    }
-
-    const rounds = await prisma.playRound.findMany({
-      where: { clubId: club.id },
-      include: {
-        days: {
-          include: {
+      prisma.playRound.findMany({
+        where: { clubId: club.id },
+        include: {
+          days: {
+            include: {
             matches: {
+              select: {
+                id: true,
+                homeTeam: true,
+                awayTeam: true,
+                date: true,
+                location: true,
+              },
               orderBy: { date: 'asc' },
             },
             absences: {
               include: {
-                player: true,
+                player: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    number: true,
+                  },
+                },
               },
               orderBy: {
                 player: {
@@ -132,12 +83,13 @@ export async function GET(req: NextRequest) {
                 },
               },
             },
+            },
+            orderBy: { date: 'asc' },
           },
-          orderBy: { date: 'asc' },
         },
-      },
-      orderBy: { startsOn: 'asc' },
-    });
+        orderBy: { startsOn: 'asc' },
+      }),
+    ]);
     const visibleRounds = [];
 
     for (const round of rounds) {
@@ -152,7 +104,7 @@ export async function GET(req: NextRequest) {
         name: club.name,
       },
       rounds: visibleRounds,
-      matches,
+      matches: [],
       players,
     });
   } catch (error: unknown) {
