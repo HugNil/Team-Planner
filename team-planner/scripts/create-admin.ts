@@ -5,6 +5,7 @@ async function main() {
   const email = process.env.ADMIN_EMAIL?.trim();
   const password = process.env.ADMIN_PASSWORD?.trim();
   const clubId = process.env.ADMIN_CLUB_ID?.trim();
+  const role = process.env.ADMIN_ROLE === 'SUPERADMIN' ? 'SUPERADMIN' : 'CLUBADMIN';
   const clubName = process.env.ADMIN_CLUB_NAME?.trim() ?? 'BK Allön';
 
   if (!email || !password) {
@@ -29,12 +30,12 @@ async function main() {
     create: {
       email,
       passwordHash,
-      role: 'SUPERADMIN',
+      role,
       clubId: club.id,
     },
     update: {
       passwordHash,
-      role: 'SUPERADMIN',
+      role,
       clubId: club.id,
     },
   });

@@ -1,6 +1,5 @@
 import { prisma } from '../src/app/lib/prisma';
 import { getPlayDayKey, getPlayRoundInfo } from '../src/app/lib/rounds';
-import bcrypt from 'bcryptjs';
 
 async function ensureMatch(data: {
   clubId: string;
@@ -179,40 +178,7 @@ async function main() {
     sourceTeamName: 'Mockad testklubb F',
   });
 
-  const testPasswordHash = await bcrypt.hash('TestAdmin123!', 12);
-  const testAdmin = await prisma.user.upsert({
-    where: { email: 'testadmin@example.com' },
-    create: {
-      email: 'testadmin@example.com',
-      passwordHash: testPasswordHash,
-      role: 'CLUBADMIN',
-      clubId: mockClub.id,
-    },
-    update: {
-      passwordHash: testPasswordHash,
-      role: 'CLUBADMIN',
-      clubId: mockClub.id,
-    },
-  });
-
-  await prisma.clubMembership.upsert({
-    where: {
-      userId_clubId: {
-        userId: testAdmin.id,
-        clubId: mockClub.id,
-      },
-    },
-    create: {
-      userId: testAdmin.id,
-      clubId: mockClub.id,
-      role: 'ADMIN',
-    },
-    update: {
-      role: 'ADMIN',
-    },
-  });
-
-  console.log(`Production seed ready: ${club.name} (${club.id}), TEST -> ${mockClub.name}, test admin -> testadmin@example.com`);
+  console.log(`Production seed ready: ${club.name} (${club.id}), TEST -> ${mockClub.name}`);
 }
 
 main()
