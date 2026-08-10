@@ -244,6 +244,15 @@ async function main() {
   await ensureMatch({
     clubId: mockClub.id,
     homeTeam: 'Mockad testklubb A',
+    awayTeam: 'Deadline BK',
+    date: new Date('2026-08-15T10:00:00'),
+    location: 'Testhallen',
+    externalId: 'mock-2026-08-15-a',
+    sourceTeamName: 'Mockad testklubb A',
+  });
+  await ensureMatch({
+    clubId: mockClub.id,
+    homeTeam: 'Mockad testklubb A',
     awayTeam: 'Exempel BK',
     date: new Date('2026-09-12T10:00:00'),
     location: 'Testhallen',

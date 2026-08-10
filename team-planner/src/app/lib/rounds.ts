@@ -43,7 +43,7 @@ export function getPlayRoundInfo(date: Date) {
 }
 
 export function getAbsenceDeadline(startsOn: Date) {
-  return endOfLocalDay(addDays(startOfLocalDay(startsOn), -6));
+  return endOfLocalDay(addDays(startOfLocalDay(startsOn), -7));
 }
 
 export function isAbsenceDeadlinePassed(startsOn: Date, now = new Date()) {

@@ -77,7 +77,7 @@ function playerName(player: Player) {
 function getAbsenceDeadline(startsOn: string) {
   const start = new Date(startsOn);
   const deadline = new Date(start);
-  deadline.setDate(deadline.getDate() - 6);
+  deadline.setDate(deadline.getDate() - 7);
   deadline.setHours(23, 59, 59, 999);
   return deadline;
 }
