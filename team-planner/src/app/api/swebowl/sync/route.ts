@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/app/lib/prisma';
 import { fetchSwebowlMatches } from '@/app/lib/swebowl';
 import { getPlayDayKey, getPlayRoundInfo } from '@/app/lib/rounds';
+import { requireClubAccess } from '@/app/lib/admin-auth';
 
 function normalizeCode(code: string | null) {
   return code?.trim() ?? '';
@@ -43,6 +44,12 @@ export async function POST(req: NextRequest) {
 
     if (!club) {
       return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
+    }
+
+    const access = await requireClubAccess(club.id, ['ADMIN']);
+
+    if (!access) {
+      return NextResponse.json({ error: 'Saknar behörighet till klubben' }, { status: 403 });
     }
 
     const teamIds = parseTeamIds(body.teamIds ?? club.swebowlTeamIds ?? process.env.SWEBOWL_TEAM_IDS);
