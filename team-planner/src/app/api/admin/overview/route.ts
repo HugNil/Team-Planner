@@ -29,8 +29,18 @@ export async function GET(req: Request) {
         players: { orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] },
         teams: { orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] },
         playRounds: {
+          where: {
+            days: {
+              some: {
+                matches: { some: {} },
+              },
+            },
+          },
           include: {
             days: {
+              where: {
+                matches: { some: {} },
+              },
               include: {
                 matches: { orderBy: { date: 'asc' } },
                 absences: { include: { player: true } },

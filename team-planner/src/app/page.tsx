@@ -35,6 +35,7 @@ type PlayDay = {
 type PlayRound = {
   id: string;
   title: string;
+  swebowlRound: number | null;
   startsOn: string;
   endsOn: string;
   days: PlayDay[];
@@ -236,8 +237,6 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code: activeCode,
-          clubName: 'BK Allön',
-          seasonId: 2025,
         }),
       });
       const payload = await response.json();
@@ -389,7 +388,7 @@ export default function Home() {
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                       <h2 className="text-xl font-bold text-slate-950">
-                        Omgång {roundIndex + 1}
+                        Omgång {round.swebowlRound ?? roundIndex + 1}
                       </h2>
                       <p className="mt-1 text-sm font-semibold text-emerald-700">
                         {roundFormatter.format(startsOn)} - {roundFormatter.format(endsOn)}

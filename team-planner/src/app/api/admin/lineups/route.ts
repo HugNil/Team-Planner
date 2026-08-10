@@ -14,17 +14,18 @@ function matchBelongsToTeam(
   match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string },
   team: { name: string; swebowlTeamId: string | null },
 ) {
-  const teamId = team.swebowlTeamId ? normalize(team.swebowlTeamId) : '';
+  const teamId = team.swebowlTeamId ? normalize(team.swebowlTeamId.split(':')[0]) : '';
   const teamName = normalize(team.name);
   const externalId = normalize(match.externalId);
   const sourceTeamName = normalize(match.sourceTeamName);
   const homeTeam = normalize(match.homeTeam);
   const awayTeam = normalize(match.awayTeam);
 
-  return Boolean(
-    (teamId && (externalId.includes(teamId) || sourceTeamName.includes(teamId))) ||
-      (teamName && (sourceTeamName.includes(teamName) || homeTeam.includes(teamName) || awayTeam.includes(teamName))),
-  );
+  if (teamId) {
+    return externalId.includes(teamId) || sourceTeamName === teamId || sourceTeamName.includes(teamId);
+  }
+
+  return Boolean(teamName && (sourceTeamName.includes(teamName) || homeTeam.includes(teamName) || awayTeam.includes(teamName)));
 }
 
 const lineupInclude = {
@@ -88,7 +89,7 @@ export async function GET(req: Request) {
           matchBelongsToTeam(match, team),
         ) ?? [];
 
-      return { team, playDay, matches: matches.length > 0 ? matches : playDay?.matches ?? [], lineup };
+      return { team, playDay, matches, lineup };
     });
 
     return NextResponse.json({ players, teams, playRound, days: playRound.days, lineups, teamPlans });

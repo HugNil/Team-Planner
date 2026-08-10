@@ -9,7 +9,7 @@ type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder:
 type Absence = { id: string; playerId: string; player: Player };
 type Match = { id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
 type PlayDay = { id: string; date: string; dateKey: string; matches: Match[]; absences: Absence[] };
-type PlayRound = { id: string; startsOn: string; endsOn: string; days: PlayDay[] };
+type PlayRound = { id: string; startsOn: string; endsOn: string; swebowlRound: number | null; days: PlayDay[] };
 type ClubOption = { id: string; name: string; role: 'ADMIN' | 'UK' };
 type Overview = {
   clubs: ClubOption[];
@@ -91,7 +91,8 @@ export default function AdminPage() {
   const selectedRoundNumber = useMemo(() => {
     if (!overview || !selectedRoundId) return 1;
     const roundIndex = overview.club.playRounds.findIndex((round) => round.id === selectedRoundId);
-    return roundIndex >= 0 ? roundIndex + 1 : 1;
+    const round = overview.club.playRounds[roundIndex];
+    return round?.swebowlRound ?? (roundIndex >= 0 ? roundIndex + 1 : 1);
   }, [overview, selectedRoundId]);
 
   async function refreshAll() {
@@ -595,7 +596,7 @@ export default function AdminPage() {
               <div className="mt-4 space-y-4">
                 {overview.club.playRounds.map((round, index) => (
                   <div key={round.id} className="rounded-md border border-slate-200 p-3">
-                    <h3 className="font-bold">Omgång {index + 1}</h3>
+                    <h3 className="font-bold">Omgång {round.swebowlRound ?? index + 1}</h3>
                     {round.days.map((day) => (
                       <div key={day.id} className="mt-3 border-t border-slate-100 pt-3">
                         <p className="font-semibold">{dayFormatter.format(new Date(day.date))}</p>
@@ -620,7 +621,7 @@ export default function AdminPage() {
               <label className="text-sm font-semibold">Välj speldag</label>
               <select value={selectedRoundId} onChange={(e) => setSelectedRoundId(e.target.value)} className="mt-2 w-full max-w-md rounded-md border border-slate-300 px-3 py-2">
                 {overview.club.playRounds.map((round, index) => (
-                  <option key={round.id} value={round.id}>Omgång {index + 1}</option>
+                  <option key={round.id} value={round.id}>Omgång {round.swebowlRound ?? index + 1}</option>
                 ))}
               </select>
             </section>

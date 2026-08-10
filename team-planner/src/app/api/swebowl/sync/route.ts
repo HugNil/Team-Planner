@@ -67,6 +67,7 @@ export async function POST(req: NextRequest) {
 
     let imported = 0;
     let updated = 0;
+    const syncedExternalIds = new Set(swebowlMatches.map((match) => match.externalId));
 
     for (const match of swebowlMatches) {
       const dateKey = getPlayDayKey(match.date);
@@ -81,11 +82,14 @@ export async function POST(req: NextRequest) {
         create: {
           clubId: club.id,
           roundKey: roundInfo.roundKey,
-          title: roundInfo.title,
+          title: match.roundNumber ? `Omgång ${match.roundNumber}` : roundInfo.title,
+          swebowlRound: match.roundNumber,
           startsOn: roundInfo.startsOn,
           endsOn: roundInfo.endsOn,
         },
         update: {
+          title: match.roundNumber ? `Omgång ${match.roundNumber}` : roundInfo.title,
+          swebowlRound: match.roundNumber,
           startsOn: roundInfo.startsOn,
           endsOn: roundInfo.endsOn,
         },
@@ -133,6 +137,7 @@ export async function POST(req: NextRequest) {
           source: 'SWEBOWL',
           externalId: match.externalId,
           sourceTeamName: match.sourceTeamName,
+          swebowlRound: match.roundNumber,
           playDayId: playDay.id,
         },
         update: {
@@ -141,6 +146,7 @@ export async function POST(req: NextRequest) {
           date: match.date,
           location: match.location,
           sourceTeamName: match.sourceTeamName,
+          swebowlRound: match.roundNumber,
           playDayId: playDay.id,
         },
       });
@@ -152,9 +158,34 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const deletedStale = await prisma.match.deleteMany({
+      where: {
+        clubId: club.id,
+        source: 'SWEBOWL',
+        externalId: {
+          notIn: [...syncedExternalIds],
+        },
+      },
+    });
+    await prisma.playDay.deleteMany({
+      where: {
+        clubId: club.id,
+        matches: { none: {} },
+        absences: { none: {} },
+        lineups: { none: {} },
+      },
+    });
+    await prisma.playRound.deleteMany({
+      where: {
+        clubId: club.id,
+        days: { none: {} },
+      },
+    });
+
     return NextResponse.json({
       imported,
       updated,
+      deletedStale: deletedStale.count,
       total: swebowlMatches.length,
       teamIds: teamIds ?? [],
       seasonId,

@@ -86,14 +86,14 @@ async function main() {
       name: 'BK Allön',
       code: 'BKALLON_UUID_ONLY',
       swebowlClub: 'BK Allön',
-      swebowlSeason: 2025,
-      swebowlTeamIds: '158483,160183,185282',
+      swebowlSeason: 2026,
+      swebowlTeamIds: '158483:923,160183:802,185282:802',
     },
     update: {
       code: 'BKALLON_UUID_ONLY',
       swebowlClub: 'BK Allön',
-      swebowlSeason: 2025,
-      swebowlTeamIds: '158483,160183,185282',
+      swebowlSeason: 2026,
+      swebowlTeamIds: '158483:923,160183:802,185282:802',
     },
   });
 
@@ -121,6 +121,88 @@ async function main() {
       },
     });
   }
+
+  const allonPlayers = [
+    { firstName: 'Robert', lastName: 'Kempner' },
+    { firstName: 'Jens', lastName: 'Lind' },
+    { firstName: 'Josefin', lastName: 'Allsten' },
+    { firstName: 'Mariette', lastName: 'Andersson' },
+    { firstName: 'Leo', lastName: 'Andreasen' },
+    { firstName: 'Maria', lastName: 'Caplander' },
+    { firstName: 'Göran', lastName: 'Carlsson' },
+    { firstName: 'Jack', lastName: 'Danell' },
+    { firstName: 'Arvid', lastName: 'Ekvall' },
+    { firstName: 'Adrian', lastName: 'Holgersson' },
+    { firstName: 'Rasmus', lastName: 'Johansson' },
+    { firstName: 'Pontus', lastName: 'Jonsson' },
+    { firstName: 'Tim', lastName: 'Karlsson' },
+    { firstName: 'Kenth', lastName: 'Lorentzen' },
+    { firstName: 'Magnus', lastName: 'Lundahl' },
+    { firstName: 'Axel', lastName: 'Nilsson' },
+    { firstName: 'Hugo', lastName: 'Nilsson' },
+    { firstName: 'Daniel', lastName: 'Pettersson' },
+    { firstName: 'Wilda', lastName: 'Smarda' },
+    { firstName: 'Torgny', lastName: 'Svensson' },
+    { firstName: 'Philip', lastName: 'Thelandersson' },
+    { firstName: 'Neo', lastName: 'Wehelie' },
+    { firstName: 'Stefan', lastName: 'Nilsson' },
+    { firstName: 'Håkan', lastName: 'Rossander' },
+    { firstName: 'Henrik', lastName: 'Olsson' },
+    { firstName: 'Maria', lastName: 'Allsten', nickname: 'Mia' },
+    { firstName: 'Henrik', lastName: 'Andreasen' },
+    { firstName: 'Tea', lastName: 'Andreasen' },
+    { firstName: 'Minea', lastName: 'Caplander' },
+    { firstName: 'Kim', lastName: 'Danell' },
+    { firstName: 'Emil', lastName: 'Johansson' },
+    { firstName: 'Gert', lastName: 'Johsson' },
+    { firstName: 'Christer', lastName: 'Lind' },
+    { firstName: 'Martin', lastName: 'Lindal' },
+    { firstName: 'Robin', lastName: 'Lorentzen' },
+    { firstName: 'Theo', lastName: 'Lundahl' },
+    { firstName: 'Emil', lastName: 'Nilsson' },
+    { firstName: 'Bengt', lastName: 'Olsson' },
+    { firstName: 'Elna', lastName: 'Scherman' },
+    { firstName: 'Therese', lastName: 'Svensson' },
+    { firstName: 'Alexander', lastName: 'Vasilica' },
+  ];
+  const keepPlayerIds = [];
+
+  for (const player of allonPlayers) {
+    const existing = await prisma.player.findFirst({
+      where: {
+        clubId: club.id,
+        firstName: player.firstName,
+        lastName: player.lastName,
+      },
+    });
+
+    const saved = existing
+      ? await prisma.player.update({
+          where: { id: existing.id },
+          data: {
+            firstName: player.firstName,
+            lastName: player.lastName,
+            nickname: player.nickname ?? null,
+          },
+        })
+      : await prisma.player.create({
+          data: {
+            clubId: club.id,
+            firstName: player.firstName,
+            lastName: player.lastName,
+            nickname: player.nickname ?? null,
+          },
+        });
+
+    keepPlayerIds.push(saved.id);
+  }
+
+  await prisma.player.deleteMany({
+    where: {
+      clubId: club.id,
+      id: { notIn: keepPlayerIds },
+    },
+  });
 
   const mockClub = await prisma.club.upsert({
     where: { code: 'TEST' },

@@ -70,6 +70,7 @@ model Match {
   source         MatchSource  @default(MANUAL)
   externalId     String?
   sourceTeamName String?
+  swebowlRound   Int?
   clubId         String
   club           Club         @relation(fields: [clubId], references: [id])
   assignments    Assignment[]
@@ -112,6 +113,7 @@ model PlayRound {
   club        Club      @relation(fields: [clubId], references: [id], onDelete: Cascade)
   roundKey    String
   title       String
+  swebowlRound Int?
   startsOn    DateTime
   endsOn      DateTime
   days        PlayDay[]

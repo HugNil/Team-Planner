@@ -52,9 +52,19 @@ export async function GET(req: NextRequest) {
         ],
       }),
       prisma.playRound.findMany({
-        where: { clubId: club.id },
+        where: {
+          clubId: club.id,
+          days: {
+            some: {
+              matches: { some: {} },
+            },
+          },
+        },
         include: {
           days: {
+            where: {
+              matches: { some: {} },
+            },
             include: {
             matches: {
               select: {
