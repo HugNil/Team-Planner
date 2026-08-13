@@ -7,9 +7,9 @@ The app is built for clubs that want a simple QR/link based member page without 
 ## Features
 
 - Private club page opened through a club link or QR code.
-- Members select their name and mark the days they cannot play.
+- Members select their name and mark the days they cannot play. No login needed.
 - Weekend rounds are grouped as one round, while absences are stored per play day.
-- Absence deadline: Sunday before the match weekend.
+- Absence deadline: Saturday before the match weekend.
 - Admin login for club admins/UK.
 - Player and team management.
 - Optional player nicknames shown in TeamPlanner, while the member absence list keeps full names.
