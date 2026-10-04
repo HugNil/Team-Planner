@@ -7,7 +7,13 @@ export async function GET(req: Request) {
   const clubId = params.get('clubId') ?? '';
   if (!await requireClubAccess(clubId)) return Response.json({ error: 'Saknar behörighet' }, { status: 403 });
   const cursor = params.get('cursor');
-  const entries = await prisma.changeLog.findMany({ where: { clubId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 51,
+  const kind = params.get('kind');
+  const where = {
+    clubId,
+    ...(kind === 'ABSENCE' || kind === 'LINEUP' || kind === 'SYNC' ? { kind } : {}),
+    ...(kind === 'UNDONE' ? { undoneAt: { not: null } } : {}),
+  };
+  const entries = await prisma.changeLog.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 51,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
   const visibleEntries = entries.slice(0, 50);
   const entriesWithStatus = await Promise.all(visibleEntries.map(async (entry: (typeof entries)[number]) => {

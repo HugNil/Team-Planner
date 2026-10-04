@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 type HistoryEntry = { id: string; actorName: string; kind: string; summary: string; createdAt: string; undoneAt: string | null; undoneBy: string | null; currentStatus: string | null; before: Record<string, unknown>; after: Record<string, unknown> };
+type HistoryFilter = 'ALL' | 'ABSENCE' | 'LINEUP' | 'SYNC' | 'UNDONE';
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
 type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number };
 type Absence = { id: string; playerId: string; player: Player };
@@ -51,6 +52,7 @@ export default function AdminPage() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('ABSENCE');
   const [syncChanges, setSyncChanges] = useState<SyncChange[] | null>(null);
   const [syncBusy, setSyncBusy] = useState(false);
   const [copyReport, setCopyReport] = useState<string[]>([]);
@@ -65,6 +67,8 @@ export default function AdminPage() {
   const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '' });
   const [selectedRoundId, setSelectedRoundId] = useState('');
   const plannerRequest = useRef(0);
+  const lineupSaveInProgress = useRef(false);
+  const pendingRemovals = useRef(new Set<string>());
   const [planner, setPlanner] = useState<PlannerData | null>(null);
   const [targetTeamId, setTargetTeamId] = useState('');
   const [savingLineup, setSavingLineup] = useState(false);
@@ -287,6 +291,9 @@ export default function AdminPage() {
     const response = await fetch(`/api/admin/lineups?clubId=${clubId}&playRoundId=${playRoundId}`);
     const payload = await response.json();
     if (requestId !== plannerRequest.current) return;
+    if (lineupSaveInProgress.current) {
+      return;
+    }
 
     if (!response.ok) {
       setError(payload.error ?? 'Kunde inte läsa lagplanering');
@@ -302,17 +309,23 @@ export default function AdminPage() {
         return current;
       }
 
+      const removalKey = (playerId: string) => `${updatedLineup.playDayId}:${updatedLineup.teamId}:${playerId}`;
       const lineups = current.lineups
         .filter((lineup) => lineup.id !== updatedLineup.id);
 
-      lineups.push(updatedLineup);
+      const visibleLineup = {
+        ...updatedLineup,
+        players: updatedLineup.players.filter((item) => !pendingRemovals.current.has(removalKey(item.playerId))),
+      };
+
+      lineups.push(visibleLineup);
 
       return {
         ...current,
         lineups,
         teamPlans: current.teamPlans.map((plan) => {
           if (plan.lineup?.id === updatedLineup.id || (plan.team.id === updatedLineup.teamId && plan.playDay?.id === updatedLineup.playDayId)) {
-            return { ...plan, lineup: updatedLineup };
+            return { ...plan, lineup: visibleLineup };
           }
 
           return plan;
@@ -394,9 +407,17 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab === 'planner' && selectedRoundId) {
-      loadPlanner(selectedRoundId);
-    }
+    if (tab !== 'planner' || !selectedRoundId) return;
+
+    loadPlanner(selectedRoundId);
+
+    const refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !lineupSaveInProgress.current) {
+        void loadPlanner(selectedRoundId);
+      }
+    }, 3000);
+
+    return () => window.clearInterval(refreshTimer);
   }, [tab, selectedRoundId]);
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
@@ -407,6 +428,7 @@ export default function AdminPage() {
     applyOptimisticAssign(playerId, teamId, playDayId, sortOrder);
 
     setSavingLineup(true);
+    lineupSaveInProgress.current = true;
     try {
       const response = await fetch('/api/admin/lineups', {
         method: 'PATCH',
@@ -431,15 +453,18 @@ export default function AdminPage() {
       setError('Kunde inte spara laguttagningen. Försök igen.');
     } finally {
       setSavingLineup(false);
+      lineupSaveInProgress.current = false;
     }
   }
 
   async function removePlayer(playerId: string, teamId: string, playDayId: string) {
-    if (savingLineup) return;
+    const removalKey = `${playDayId}:${teamId}:${playerId}`;
+    pendingRemovals.current.add(removalKey);
     const previousPlanner = planner;
     applyPlayerRemove(playerId, teamId, playDayId);
 
     setSavingLineup(true);
+    lineupSaveInProgress.current = true;
     try {
       const response = await fetch('/api/admin/lineups', {
         method: 'PATCH',
@@ -459,11 +484,14 @@ export default function AdminPage() {
       setPlanner((current) => current?.playRound.id === previousPlanner?.playRound.id ? previousPlanner : current);
       setError('Kunde inte spara laguttagningen. Försök igen.');
     } finally {
+      pendingRemovals.current.delete(removalKey);
       setSavingLineup(false);
+      lineupSaveInProgress.current = false;
     }
   }
 
   async function saveCoach(teamId: string, playDayId: string, coachName: string) {
+    lineupSaveInProgress.current = true;
     try {
       const response = await fetch('/api/admin/lineups', {
         method: 'PATCH',
@@ -483,13 +511,15 @@ export default function AdminPage() {
       }
     } catch {
       setError('Kunde inte spara coach. Försök igen.');
+    } finally {
+      lineupSaveInProgress.current = false;
     }
   }
 
   async function loadHistory(cursor?: string) {
     setHistoryBusy(true);
     try {
-      const response = await fetch(`/api/admin/history?clubId=${encodeURIComponent(clubId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const response = await fetch(`/api/admin/history?clubId=${encodeURIComponent(clubId)}&kind=${historyFilter}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? 'Kunde inte läsa historiken');
       setHistory((current) => cursor ? [...current, ...payload.entries] : payload.entries);
@@ -505,6 +535,13 @@ export default function AdminPage() {
     setCopyReport([]);
     if (tab === 'history' && clubId) void loadHistory();
   }, [tab, clubId]);
+
+  useEffect(() => {
+    if (tab !== 'history' || !clubId) return;
+    setHistory([]);
+    setHistoryCursor(null);
+    void loadHistory();
+  }, [historyFilter]);
 
   async function undoHistory(id: string) {
     if (historyBusy) return;
@@ -777,7 +814,17 @@ export default function AdminPage() {
           <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <h2 className="text-xl font-bold">Ändringshistorik</h2>
             <p className="mt-1 text-sm text-slate-600">Historiken börjar när funktionen aktiverades. Ändringar via medlemslänken saknar verifierad avsändare. Ångra återställer den valda ändringen om uppgifterna inte har ändrats igen.</p>
-            <button disabled={historyBusy} onClick={() => loadHistory()} className="mt-3 rounded-md border px-3 py-2 text-sm">Uppdatera</button>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <label className="text-sm font-semibold" htmlFor="history-filter">Visa</label>
+              <select id="history-filter" value={historyFilter} onChange={(event) => setHistoryFilter(event.target.value as HistoryFilter)} className="rounded-md border border-slate-300 px-3 py-2 text-sm">
+                <option value="ABSENCE">Frånvaro/kryssande</option>
+                <option value="LINEUP">Lag och uttagningar</option>
+                <option value="SYNC">Matchsynkning</option>
+                <option value="UNDONE">Ångrade ändringar</option>
+                <option value="ALL">Alla ändringar</option>
+              </select>
+              <button disabled={historyBusy} onClick={() => loadHistory()} className="rounded-md border px-3 py-2 text-sm">Uppdatera</button>
+            </div>
             {!history.length && <p className="mt-4 text-sm">{historyBusy ? 'Laddar…' : 'Inga registrerade ändringar.'}</p>}
             <div className="mt-4 space-y-3">{history.map((entry) => (
               <article key={entry.id} className="rounded-md border border-slate-200 p-3">
@@ -921,6 +968,8 @@ export default function AdminPage() {
                                       >
                                         <span className="min-w-0 truncate">{plannerName(item.player)}</span>
                                         <button
+                                          type="button"
+                                          onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             playDay && removePlayer(item.playerId, team.id, playDay.id);
@@ -955,6 +1004,8 @@ export default function AdminPage() {
                               >
                                 <span className="min-w-0 truncate">{plannerName(playerBySlot.get(8)!.player)}</span>
                                 <button
+                                  type="button"
+                                  onPointerDown={(event) => event.stopPropagation()}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     playDay && removePlayer(playerBySlot.get(8)!.playerId, team.id, playDay.id);
