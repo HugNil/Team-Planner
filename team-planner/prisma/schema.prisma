@@ -173,6 +173,10 @@ model Team {
   name          String
   swebowlTeamId String?
   sortOrder     Int      @default(0)
+  leaderLabel   String   @default("Coach")
+  reserveCount  Int      @default(1)
+  reserveLabel  String   @default("Reserv")
+  reserve2Label String   @default("10:a")
   lineups       Lineup[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt

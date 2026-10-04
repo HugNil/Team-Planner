@@ -24,6 +24,10 @@ export async function POST(req: Request) {
         name,
         swebowlTeamId: body.swebowlTeamId ? String(body.swebowlTeamId).trim() : null,
         sortOrder: Number(body.sortOrder ?? 0),
+        leaderLabel: String(body.leaderLabel ?? 'Coach').trim() || 'Coach',
+        reserveCount: Math.max(1, Math.min(2, Number(body.reserveCount ?? 1))),
+        reserveLabel: String(body.reserveLabel ?? 'Reserv').trim() || 'Reserv',
+        reserve2Label: String(body.reserve2Label ?? '10:a').trim() || '10:a',
       },
     });
 
@@ -56,6 +60,10 @@ export async function PATCH(req: Request) {
         name: String(body.name ?? team.name).trim(),
         swebowlTeamId: body.swebowlTeamId === '' ? null : String(body.swebowlTeamId ?? team.swebowlTeamId ?? '').trim() || null,
         sortOrder: Number(body.sortOrder ?? team.sortOrder),
+        leaderLabel: String(body.leaderLabel ?? team.leaderLabel).trim() || 'Coach',
+        reserveCount: Math.max(1, Math.min(2, Number(body.reserveCount ?? team.reserveCount))),
+        reserveLabel: String(body.reserveLabel ?? team.reserveLabel).trim() || 'Reserv',
+        reserve2Label: String(body.reserve2Label ?? team.reserve2Label).trim() || '10:a',
       },
     });
 

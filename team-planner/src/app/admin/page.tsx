@@ -10,7 +10,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 type HistoryEntry = { id: string; actorName: string; kind: string; summary: string; createdAt: string; undoneAt: string | null; undoneBy: string | null; currentStatus: string | null; before: Record<string, unknown>; after: Record<string, unknown> };
 type HistoryFilter = 'ALL' | 'ABSENCE' | 'LINEUP' | 'SYNC' | 'UNDONE';
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
-type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number };
+type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number; leaderLabel: string; reserveCount: number; reserveLabel: string; reserve2Label: string };
 type Absence = { id: string; playerId: string; player: Player };
 type Match = { id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
 type PlayDay = { id: string; date: string; dateKey: string; matches: Match[]; absences: Absence[] };
@@ -62,9 +62,9 @@ export default function AdminPage() {
   const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
   const [playerEditForm, setPlayerEditForm] = useState({ firstName: '', lastName: '', nickname: '' });
-  const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '' });
+  const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
   const [editingTeamId, setEditingTeamId] = useState('');
-  const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '' });
+  const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
   const [selectedRoundId, setSelectedRoundId] = useState('');
   const plannerRequest = useRef(0);
   const lineupSaveInProgress = useRef(false);
@@ -221,7 +221,7 @@ export default function AdminPage() {
       return;
     }
 
-    setTeamForm({ name: '', swebowlTeamId: '' });
+    setTeamForm({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
     setMessage('Lag tillagt.');
     await refreshAll();
   }
@@ -231,6 +231,10 @@ export default function AdminPage() {
     setTeamEditForm({
       name: team.name,
       swebowlTeamId: team.swebowlTeamId ?? '',
+      leaderLabel: team.leaderLabel,
+      reserveCount: team.reserveCount,
+      reserveLabel: team.reserveLabel,
+      reserve2Label: team.reserve2Label,
     });
   }
 
@@ -407,18 +411,36 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab !== 'planner' || !selectedRoundId) return;
+    if (tab !== 'planner' || !selectedRoundId || !clubId) return;
 
     loadPlanner(selectedRoundId);
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let closed = false;
 
-    const refreshTimer = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !lineupSaveInProgress.current) {
-        void loadPlanner(selectedRoundId);
-      }
-    }, 3000);
+    const connect = () => {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/admin/ws?clubId=${encodeURIComponent(clubId)}`);
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data as string) as { type?: string };
+          if (message.type === 'planner-updated' && !lineupSaveInProgress.current) void loadPlanner(selectedRoundId);
+        } catch {
+          // Ignore malformed socket messages and keep the connection alive.
+        }
+      };
+      socket.onclose = () => {
+        if (!closed) reconnectTimer = window.setTimeout(connect, 3000);
+      };
+    };
 
-    return () => window.clearInterval(refreshTimer);
-  }, [tab, selectedRoundId]);
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [tab, selectedRoundId, clubId]);
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
     if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
@@ -579,7 +601,7 @@ export default function AdminPage() {
     const players = (value.players as { playerId: string; sortOrder: number }[] | undefined) ?? [];
     const names = players.map((item) => {
       const player = overview?.club.players.find((p) => p.id === item.playerId);
-      return `${item.sortOrder === 8 ? 'Reserv' : item.sortOrder + 1}: ${player ? playerName(player) : 'Borttagen spelare'}`;
+      return `${item.sortOrder >= 8 ? `Reserv ${item.sortOrder - 7}` : item.sortOrder + 1}: ${player ? playerName(player) : 'Borttagen spelare'}`;
     });
     return `Coach: ${value.coachName || 'Ingen'}. ${names.join(', ') || 'Inga spelare'}`;
   }
@@ -597,14 +619,13 @@ export default function AdminPage() {
       }
     }
 
-    const reserve = playerBySlot.get(8);
-
-    if (reserve) {
-      lines.push(`Reserv: ${reserve}`);
+    for (let reserveIndex = 0; reserveIndex < team.reserveCount; reserveIndex += 1) {
+      const reserve = playerBySlot.get(8 + reserveIndex);
+      if (reserve) lines.push(`${reserveIndex === 0 ? team.reserveLabel : team.reserve2Label}: ${reserve}`);
     }
 
     if (lineup?.coachName) {
-      lines.push(`Coach: ${lineup.coachName}`);
+      lines.push(`${team.leaderLabel}: ${lineup.coachName}`);
     }
 
     await navigator.clipboard.writeText(lines.join('\n'));
@@ -730,9 +751,13 @@ export default function AdminPage() {
                 {overview.club.teams.map((team) => (
                   <div key={team.id} className="py-3">
                     {editingTeamId === team.id ? (
-                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto]">
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                         <input value={teamEditForm.name} onChange={(e) => setTeamEditForm({ ...teamEditForm, name: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <input value={teamEditForm.swebowlTeamId} onChange={(e) => setTeamEditForm({ ...teamEditForm, swebowlTeamId: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <input value={teamEditForm.leaderLabel} onChange={(e) => setTeamEditForm({ ...teamEditForm, leaderLabel: e.target.value })} placeholder="Coach-etikett" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <select value={teamEditForm.reserveCount} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserveCount: Number(e.target.value) })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2"><option value={1}>1 reserv</option><option value={2}>2 reserver</option></select>
+                        <input value={teamEditForm.reserveLabel} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserveLabel: e.target.value })} placeholder="Första reserv" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <input value={teamEditForm.reserve2Label} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserve2Label: e.target.value })} placeholder="Andra reserv" disabled={teamEditForm.reserveCount < 2} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2 disabled:bg-slate-100" />
                         <button type="button" onClick={() => saveTeam(team.id)} className="whitespace-nowrap rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Spara</button>
                         <button type="button" onClick={() => setEditingTeamId('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Avbryt</button>
                       </div>
@@ -923,7 +948,7 @@ export default function AdminPage() {
                           onClick={() => playDay && copyPrevious(team.id, playDay.id)}
                           title="Kopiera spelare och coach till ett tomt lag. Frånvarande spelare hoppas över."
                           className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50">Kopiera föregående uttagning</button>
-                        <label className="mt-4 block text-sm font-semibold text-slate-900">Coach</label>
+                        <label className="mt-4 block text-sm font-semibold text-slate-900">{team.leaderLabel}</label>
                         <input
                           key={`${planner.playRound.id}-${team.id}-${playDay?.id}-${lineup?.coachName ?? ''}`}
                           defaultValue={lineup?.coachName ?? ''}
@@ -934,7 +959,7 @@ export default function AdminPage() {
                               void saveCoach(team.id, playDay.id, coachName);
                             }
                           }}
-                          placeholder="Namn på coach"
+                          placeholder={`Namn på ${team.leaderLabel.toLowerCase()}`}
                           className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         />
                         {matches.length > 0 && (
@@ -989,38 +1014,28 @@ export default function AdminPage() {
                               })}
                             </div>
                           ))}
-                          <div
-                            onDragOver={(event) => event.preventDefault()}
-                            onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, 8)}
-                            onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, 8)}
-                            className={`rounded-md border border-amber-200 bg-amber-50 p-2 ${selectedPlannerPlayerId && !playerBySlot.get(8) ? 'cursor-pointer ring-2 ring-amber-100' : ''}`}
-                          >
-                            <p className="mb-2 text-xs font-semibold uppercase text-amber-800">Reserv</p>
-                            {playerBySlot.get(8) ? (
+                          {Array.from({ length: team.reserveCount }, (_, reserveIndex) => {
+                            const slot = 8 + reserveIndex;
+                            const reserveLabel = reserveIndex === 0 ? team.reserveLabel : team.reserve2Label;
+                            const reservePlayer = playerBySlot.get(slot);
+                            return (
                               <div
-                                draggable
-                                onDragStart={(event) => event.dataTransfer.setData('playerId', playerBySlot.get(8)!.playerId)}
-                                className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm"
+                                key={slot}
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot)}
+                                onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, slot)}
+                                className={`rounded-md border border-amber-200 bg-amber-50 p-2 ${selectedPlannerPlayerId && !reservePlayer ? 'cursor-pointer ring-2 ring-amber-100' : ''}`}
                               >
-                                <span className="min-w-0 truncate">{plannerName(playerBySlot.get(8)!.player)}</span>
-                                <button
-                                  type="button"
-                                  onPointerDown={(event) => event.stopPropagation()}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    playDay && removePlayer(playerBySlot.get(8)!.playerId, team.id, playDay.id);
-                                  }}
-                                  aria-label={`Ta bort ${plannerName(playerBySlot.get(8)!.player)}`}
-                                  title="Ta bort"
-                                  className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50"
-                                >
-                                  ×
-                                </button>
+                                <p className="mb-2 text-xs font-semibold uppercase text-amber-800">{reserveLabel}</p>
+                                {reservePlayer ? (
+                                  <div draggable onDragStart={(event) => event.dataTransfer.setData('playerId', reservePlayer.playerId)} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm">
+                                    <span className="min-w-0 truncate">{plannerName(reservePlayer.player)}</span>
+                                    <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); playDay && removePlayer(reservePlayer.playerId, team.id, playDay.id); }} aria-label={`Ta bort ${plannerName(reservePlayer.player)}`} title="Ta bort" className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50">×</button>
+                                  </div>
+                                ) : <div className="rounded-md border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-800">{reserveLabel}</div>}
                               </div>
-                            ) : (
-                              <div className="rounded-md border border-dashed border-amber-300 px-3 py-2 text-sm text-amber-800">Reservplats</div>
-                            )}
-                          </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );
