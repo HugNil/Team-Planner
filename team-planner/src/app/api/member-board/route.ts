@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordChange } from '@/app/lib/change-history';
 import { prisma } from '@/app/lib/prisma';
 import { isAbsenceDeadlinePassed } from '@/app/lib/rounds';
 
@@ -152,35 +153,39 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Deadline har passerat. Kontakta UK direkt.' }, { status: 403 });
     }
 
-    if (unavailable) {
-      const absence = await prisma.dayAbsence.upsert({
-        where: {
-          playDayId_playerId: {
+    return await recordChange(prisma, club.id,
+      { name: `Medlemslänk (${player.firstName} ${player.lastName}, ej inloggad)` },
+      { kind: 'ABSENCE', playDayId, playerId }, unavailable ? 'Frånvaro markerad' : 'Frånvaro avmarkerad', async (tx) => {
+        if (unavailable) {
+          const absence = await tx.dayAbsence.upsert({
+            where: {
+              playDayId_playerId: {
+                playDayId,
+                playerId,
+              },
+            },
+            create: {
+              playDayId,
+              playerId,
+            },
+            update: {},
+            include: {
+              player: true,
+            },
+          });
+
+          return NextResponse.json({ absence });
+        }
+
+        await tx.dayAbsence.deleteMany({
+          where: {
             playDayId,
             playerId,
           },
-        },
-        create: {
-          playDayId,
-          playerId,
-        },
-        update: {},
-        include: {
-          player: true,
-        },
-      });
+        });
 
-      return NextResponse.json({ absence });
-    }
-
-    await prisma.dayAbsence.deleteMany({
-      where: {
-        playDayId,
-        playerId,
-      },
+        return NextResponse.json({ absence: null });
     });
-
-    return NextResponse.json({ absence: null });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });

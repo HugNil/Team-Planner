@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/app/lib/prisma';
 import { fetchSwebowlMatches } from '@/app/lib/swebowl';
-import { getPlayDayKey, getPlayRoundInfo } from '@/app/lib/rounds';
+import { getSwebowlSyncScope, saveSwebowlMatches } from '@/app/lib/swebowl-sync';
 import { requireClubAccess } from '@/app/lib/admin-auth';
 
 function normalizeCode(code: string | null) {
@@ -72,127 +72,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    let imported = 0;
-    let updated = 0;
-    const syncedExternalIds = new Set(swebowlMatches.map((match) => match.externalId));
-
-    for (const match of swebowlMatches) {
-      const dateKey = getPlayDayKey(match.date);
-      const roundInfo = getPlayRoundInfo(match.date);
-      const playRound = await prisma.playRound.upsert({
-        where: {
-          clubId_roundKey: {
-            clubId: club.id,
-            roundKey: roundInfo.roundKey,
-          },
-        },
-        create: {
-          clubId: club.id,
-          roundKey: roundInfo.roundKey,
-          title: match.roundNumber ? `Omgång ${match.roundNumber}` : roundInfo.title,
-          swebowlRound: match.roundNumber,
-          startsOn: roundInfo.startsOn,
-          endsOn: roundInfo.endsOn,
-        },
-        update: {
-          title: match.roundNumber ? `Omgång ${match.roundNumber}` : roundInfo.title,
-          swebowlRound: match.roundNumber,
-          startsOn: roundInfo.startsOn,
-          endsOn: roundInfo.endsOn,
-        },
-      });
-      const playDay = await prisma.playDay.upsert({
-        where: {
-          clubId_dateKey: {
-            clubId: club.id,
-            dateKey,
-          },
-        },
-        create: {
-          clubId: club.id,
-          playRoundId: playRound.id,
-          dateKey,
-          date: new Date(`${dateKey}T00:00:00`),
-        },
-        update: {
-          playRoundId: playRound.id,
-          date: new Date(`${dateKey}T00:00:00`),
-        },
-      });
-      const existing = await prisma.match.findUnique({
-        where: {
-          clubId_externalId: {
-            clubId: club.id,
-            externalId: match.externalId,
-          },
-        },
-      });
-
-      await prisma.match.upsert({
-        where: {
-          clubId_externalId: {
-            clubId: club.id,
-            externalId: match.externalId,
-          },
-        },
-        create: {
-          clubId: club.id,
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          date: match.date,
-          location: match.location,
-          source: 'SWEBOWL',
-          externalId: match.externalId,
-          sourceTeamName: match.sourceTeamName,
-          swebowlRound: match.roundNumber,
-          playDayId: playDay.id,
-        },
-        update: {
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          date: match.date,
-          location: match.location,
-          sourceTeamName: match.sourceTeamName,
-          swebowlRound: match.roundNumber,
-          playDayId: playDay.id,
-        },
-      });
-
-      if (existing) {
-        updated += 1;
-      } else {
-        imported += 1;
-      }
-    }
-
-    const deletedStale = await prisma.match.deleteMany({
-      where: {
-        clubId: club.id,
-        source: 'SWEBOWL',
-        externalId: {
-          notIn: [...syncedExternalIds],
-        },
-      },
-    });
-    await prisma.playDay.deleteMany({
-      where: {
-        clubId: club.id,
-        matches: { none: {} },
-        absences: { none: {} },
-        lineups: { none: {} },
-      },
-    });
-    await prisma.playRound.deleteMany({
-      where: {
-        clubId: club.id,
-        days: { none: {} },
-      },
-    });
+    const result = await saveSwebowlMatches(prisma, club.id, swebowlMatches,
+      getSwebowlSyncScope(seasonId, clubName, teamIds), { id: access.user.id, name: access.user.email });
 
     return NextResponse.json({
-      imported,
-      updated,
-      deletedStale: deletedStale.count,
+      ...result,
+      message: `Synk klar: ${result.imported} nya, ${result.updated} uppdaterade, ${result.unchanged} oförändrade, ${result.deletedStale} borttagna.${result.deletionSkipped ? ' Kalenderflödet visar bara kommande matcher, därför har inga saknade matcher tagits bort.' : ''}`,
       total: swebowlMatches.length,
       teamIds: teamIds ?? [],
       seasonId,
@@ -204,10 +89,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         imported: 0,
         updated: 0,
-        message: 'Swebowl blockerade automatisk klubb-sökning från servern. Lägg de fyra lag-ID:na i SWEBOWL_TEAM_IDS för att synka via kalenderfeed.',
-      });
+        error: 'Swebowl blockerade automatisk klubb-sökning från servern. Lägg de fyra lag-ID:na i SWEBOWL_TEAM_IDS för att synka via kalenderfeed. Inga matcher har ändrats.',
+      }, { status: 502 });
     }
 
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return NextResponse.json({ error: `Synk misslyckades. Inga matcher har ändrats. ${errorMessage}` }, { status: 500 });
   }
 }

@@ -70,6 +70,7 @@ model Match {
   source         MatchSource  @default(MANUAL)
   externalId     String?
   sourceTeamName String?
+  swebowlSyncScope String?
   swebowlRound   Int?
   clubId         String
   club           Club         @relation(fields: [clubId], references: [id])
@@ -233,4 +234,22 @@ enum ClubMemberRole {
 enum MatchSource {
   MANUAL
   SWEBOWL
+}
+
+
+model ChangeLog {
+  id        String   @id @default(cuid())
+  clubId    String
+  actorId   String?
+  actorName String
+  kind      String
+  entityKey String
+  summary   String
+  before    Json
+  after     Json
+  createdAt DateTime @default(now())
+  undoneAt  DateTime?
+  undoneBy  String?
+
+  @@index([clubId, createdAt])
 }

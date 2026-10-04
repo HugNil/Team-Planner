@@ -8,6 +8,7 @@
     "vercel-build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "tsx --test src/app/lib/*.test.ts",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:prod": "tsx prisma/seed-production.ts",
     "admin:create": "tsx scripts/create-admin.ts",
