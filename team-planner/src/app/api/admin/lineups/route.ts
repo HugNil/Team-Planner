@@ -4,6 +4,7 @@ import { requireClubAccess } from '@/app/lib/admin-auth';
 import { recordChange } from '@/app/lib/change-history';
 import { getLineupConflict } from '@/app/lib/lineup-eligibility';
 import { prisma } from '@/app/lib/prisma';
+import { broadcastTeamPlannerUpdate } from '@/app/lib/team-planner-realtime';
 
 function normalize(value: string | null | undefined) {
   return (value ?? '')
@@ -111,7 +112,7 @@ export async function PATCH(req: Request) {
     const playerId = String(body.playerId ?? '');
     const action = String(body.action ?? 'add');
     const coachName = String(body.coachName ?? '').trim();
-    const sortOrder = Math.max(0, Math.min(8, Number(body.sortOrder ?? 0)));
+    const sortOrder = Math.max(0, Math.min(9, Number(body.sortOrder ?? 0)));
     const access = await requireClubAccess(clubId, ['ADMIN', 'UK']);
 
     if (!access) {
@@ -135,6 +136,7 @@ export async function PATCH(req: Request) {
       });
 
       });
+      broadcastTeamPlannerUpdate(clubId);
       return NextResponse.json({ ok: true, playerId });
     }
 
@@ -165,6 +167,7 @@ export async function PATCH(req: Request) {
       });
 
       });
+      broadcastTeamPlannerUpdate(clubId);
       return NextResponse.json({ ok: true, lineup });
     }
 
@@ -217,6 +220,7 @@ export async function PATCH(req: Request) {
     if (result.conflict) return NextResponse.json({ error: result.conflict }, { status: 409 });
     const updatedLineup = result.lineup;
 
+    broadcastTeamPlannerUpdate(clubId);
     return NextResponse.json({ ok: true, lineup: updatedLineup, playerId });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
