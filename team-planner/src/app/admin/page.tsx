@@ -1,9 +1,13 @@
 'use client';
 
+import { SyncChanges } from './components/sync-changes';
+import type { SyncChange } from '@/app/lib/sync-summary';
+import { getLineupConflict } from '@/app/lib/lineup-eligibility';
 import { signOut, useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
+type HistoryEntry = { id: string; actorName: string; kind: string; summary: string; createdAt: string; undoneAt: string | null; undoneBy: string | null; currentStatus: string | null; before: Record<string, unknown>; after: Record<string, unknown> };
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
 type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number };
 type Absence = { id: string; playerId: string; player: Player };
@@ -43,8 +47,15 @@ export default function AdminPage() {
   const router = useRouter();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [clubId, setClubId] = useState('');
-  const [tab, setTab] = useState<'players' | 'absence' | 'planner'>('players');
+  const [tab, setTab] = useState<'players' | 'absence' | 'planner' | 'history'>('players');
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [syncChanges, setSyncChanges] = useState<SyncChange[] | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [copyReport, setCopyReport] = useState<string[]>([]);
   const [message, setMessage] = useState('');
+  const [savingAbsence, setSavingAbsence] = useState(false);
   const [error, setError] = useState('');
   const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
@@ -53,7 +64,10 @@ export default function AdminPage() {
   const [editingTeamId, setEditingTeamId] = useState('');
   const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '' });
   const [selectedRoundId, setSelectedRoundId] = useState('');
+  const plannerRequest = useRef(0);
   const [planner, setPlanner] = useState<PlannerData | null>(null);
+  const [targetTeamId, setTargetTeamId] = useState('');
+  const [savingLineup, setSavingLineup] = useState(false);
   const [selectedPlannerPlayerId, setSelectedPlannerPlayerId] = useState('');
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
 
@@ -157,6 +171,38 @@ export default function AdminPage() {
     await refreshAll();
   }
 
+  async function toggleAdminAbsence(playDayId: string, playerId: string, unavailable: boolean) {
+    setSavingAbsence(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/admin/absences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, playDayId, playerId, unavailable }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte spara frånvaron');
+      setOverview((current) => !current || current.activeClubId !== clubId ? current : {
+        ...current,
+        club: { ...current.club, playRounds: current.club.playRounds.map((round) => ({
+          ...round,
+          days: round.days.map((day) => day.id !== playDayId ? day : {
+            ...day,
+            absences: [...day.absences.filter((absence) => absence.playerId !== playerId),
+              ...(payload.absence ? [payload.absence] : [])],
+          }),
+        })) },
+      });
+      setMessage('Frånvaro sparad.');
+      if (selectedRoundId) await loadPlanner(selectedRoundId);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte spara frånvaron');
+    } finally {
+      setSavingAbsence(false);
+    }
+  }
+
   async function handleAddTeam(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const response = await fetch('/api/admin/teams', {
@@ -210,22 +256,37 @@ export default function AdminPage() {
   }
 
   async function syncSwebowl() {
+    if (syncBusy) return;
+    setSyncBusy(true);
+    setSyncChanges(null);
     setMessage('');
     setError('');
-    const response = await fetch('/api/swebowl/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: clubId }),
-    });
-    const payload = await response.json();
-    setMessage(payload.message ?? `Synk klar: ${payload.imported} nya, ${payload.updated} uppdaterade.`);
-    await refreshAll();
+    try {
+      const response = await fetch('/api/swebowl/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: clubId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? 'Kunde inte synka matcher');
+      }
+      setMessage(payload.message ?? `Synk klar: ${payload.imported} nya, ${payload.updated} uppdaterade.`);
+      setSyncChanges(payload.changes ?? []);
+      await refreshAll();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte synka matcher');
+    } finally {
+      setSyncBusy(false);
+    }
   }
 
   async function loadPlanner(playRoundId = selectedRoundId) {
     if (!playRoundId || !clubId) return;
+    const requestId = ++plannerRequest.current;
     const response = await fetch(`/api/admin/lineups?clubId=${clubId}&playRoundId=${playRoundId}`);
     const payload = await response.json();
+    if (requestId !== plannerRequest.current) return;
 
     if (!response.ok) {
       setError(payload.error ?? 'Kunde inte läsa lagplanering');
@@ -235,18 +296,13 @@ export default function AdminPage() {
     setPlanner(payload);
   }
 
-  function applyLineupUpdate(updatedLineup: Lineup, movedPlayerId?: string) {
+  function applyLineupUpdate(updatedLineup: Lineup) {
     setPlanner((current) => {
-      if (!current) {
+      if (!current || !current.days.some((day) => day.id === updatedLineup.playDayId)) {
         return current;
       }
 
-      const cleanLineup = (lineup: Lineup) => ({
-        ...lineup,
-        players: movedPlayerId ? lineup.players.filter((item) => item.playerId !== movedPlayerId) : lineup.players,
-      });
       const lineups = current.lineups
-        .map(cleanLineup)
         .filter((lineup) => lineup.id !== updatedLineup.id);
 
       lineups.push(updatedLineup);
@@ -259,13 +315,13 @@ export default function AdminPage() {
             return { ...plan, lineup: updatedLineup };
           }
 
-          return plan.lineup ? { ...plan, lineup: cleanLineup(plan.lineup) } : plan;
+          return plan;
         }),
       };
     });
   }
 
-  function applyPlayerRemove(playerId: string) {
+  function applyPlayerRemove(playerId: string, teamId: string, playDayId: string) {
     setPlanner((current) => {
       if (!current) {
         return current;
@@ -273,7 +329,8 @@ export default function AdminPage() {
 
       const cleanLineup = (lineup: Lineup) => ({
         ...lineup,
-        players: lineup.players.filter((item) => item.playerId !== playerId),
+        players: lineup.teamId === teamId && lineup.playDayId === playDayId
+          ? lineup.players.filter((item) => item.playerId !== playerId) : lineup.players,
       });
 
       return {
@@ -317,12 +374,7 @@ export default function AdminPage() {
           },
         ].sort((a, b) => a.sortOrder - b.sortOrder),
       };
-      const cleanLineup = (lineup: Lineup) => ({
-        ...lineup,
-        players: lineup.players.filter((item) => item.playerId !== playerId),
-      });
       const lineups = current.lineups
-        .map(cleanLineup)
         .filter((lineup) => lineup.id !== baseLineup.id);
 
       lineups.push(updatedLineup);
@@ -335,7 +387,7 @@ export default function AdminPage() {
             return { ...item, lineup: updatedLineup };
           }
 
-          return item.lineup ? { ...item, lineup: cleanLineup(item.lineup) } : item;
+          return item;
         }),
       };
     });
@@ -348,67 +400,151 @@ export default function AdminPage() {
   }, [tab, selectedRoundId]);
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
-    if (!playerId) return;
+    if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
+    const conflict = getLineupConflict(planner.lineups, playerId, teamId, sortOrder, playDayId);
+    if (conflict) { setError(conflict); return; }
     const previousPlanner = planner;
     applyOptimisticAssign(playerId, teamId, playDayId, sortOrder);
 
-    const response = await fetch('/api/admin/lineups', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clubId, playDayId, teamId, playerId, sortOrder, action: 'add' }),
-    });
-    const payload = await response.json();
+    setSavingLineup(true);
+    try {
+      const response = await fetch('/api/admin/lineups', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, playDayId, teamId, playerId, sortOrder, action: 'add' }),
+      });
+      const payload = await response.json();
 
-    if (!response.ok) {
-      setPlanner(previousPlanner);
-      setError(payload.error ?? 'Kunde inte placera spelare');
-      return;
-    }
+      if (!response.ok) {
+        setPlanner((current) => current?.playRound.id === previousPlanner?.playRound.id ? previousPlanner : current);
+        setError(payload.error ?? 'Kunde inte placera spelare');
+        return;
+      }
 
-    setError('');
-    setSelectedPlannerPlayerId('');
-    if (payload.lineup) {
-      applyLineupUpdate(payload.lineup, playerId);
+      setError('');
+      setSelectedPlannerPlayerId('');
+      if (payload.lineup) {
+        applyLineupUpdate(payload.lineup);
+      }
+    } catch {
+      setPlanner((current) => current?.playRound.id === previousPlanner?.playRound.id ? previousPlanner : current);
+      setError('Kunde inte spara laguttagningen. Försök igen.');
+    } finally {
+      setSavingLineup(false);
     }
   }
 
   async function removePlayer(playerId: string, teamId: string, playDayId: string) {
+    if (savingLineup) return;
     const previousPlanner = planner;
-    applyPlayerRemove(playerId);
+    applyPlayerRemove(playerId, teamId, playDayId);
 
-    const response = await fetch('/api/admin/lineups', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clubId, playDayId, teamId, playerId, action: 'remove' }),
-    });
-    const payload = await response.json();
+    setSavingLineup(true);
+    try {
+      const response = await fetch('/api/admin/lineups', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, playDayId, teamId, playerId, action: 'remove' }),
+      });
+      const payload = await response.json();
 
-    if (!response.ok) {
-      setPlanner(previousPlanner);
-      setError(payload.error ?? 'Kunde inte ta bort spelare');
-      return;
+      if (!response.ok) {
+        setPlanner((current) => current?.playRound.id === previousPlanner?.playRound.id ? previousPlanner : current);
+        setError(payload.error ?? 'Kunde inte ta bort spelare');
+        return;
+      }
+
+      setError('');
+    } catch {
+      setPlanner((current) => current?.playRound.id === previousPlanner?.playRound.id ? previousPlanner : current);
+      setError('Kunde inte spara laguttagningen. Försök igen.');
+    } finally {
+      setSavingLineup(false);
     }
-
-    setError('');
   }
 
   async function saveCoach(teamId: string, playDayId: string, coachName: string) {
-    const response = await fetch('/api/admin/lineups', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clubId, playDayId, teamId, coachName, action: 'coach' }),
-    });
-    const payload = await response.json();
+    try {
+      const response = await fetch('/api/admin/lineups', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, playDayId, teamId, coachName, action: 'coach' }),
+      });
+      const payload = await response.json();
 
-    if (!response.ok) {
-      setError(payload.error ?? 'Kunde inte spara coach');
-      return;
+      if (!response.ok) {
+        setError(payload.error ?? 'Kunde inte spara coach');
+        return;
+      }
+
+      setError('');
+      if (payload.lineup) {
+        applyLineupUpdate(payload.lineup);
+      }
+    } catch {
+      setError('Kunde inte spara coach. Försök igen.');
     }
+  }
 
+  async function loadHistory(cursor?: string) {
+    setHistoryBusy(true);
+    try {
+      const response = await fetch(`/api/admin/history?clubId=${encodeURIComponent(clubId)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte läsa historiken');
+      setHistory((current) => cursor ? [...current, ...payload.entries] : payload.entries);
+      setHistoryCursor(payload.nextCursor);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte läsa historiken');
+    } finally { setHistoryBusy(false); }
+  }
+
+  useEffect(() => {
+    setHistory([]);
+    setSyncChanges(null);
+    setCopyReport([]);
+    if (tab === 'history' && clubId) void loadHistory();
+  }, [tab, clubId]);
+
+  async function undoHistory(id: string) {
+    if (historyBusy) return;
+    setHistoryBusy(true);
     setError('');
-    if (payload.lineup) {
-      applyLineupUpdate(payload.lineup);
-    }
+    try {
+      const response = await fetch('/api/admin/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clubId, id }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte ångra ändringen');
+      setMessage('Ändringen återställd.');
+      await refreshAll();
+      await loadHistory();
+    } catch (error) { setError(error instanceof Error ? error.message : 'Kunde inte ångra ändringen'); }
+    finally { setHistoryBusy(false); }
+  }
+
+  async function copyPrevious(teamId: string, playDayId: string) {
+    if (savingLineup) return;
+    setSavingLineup(true);
+    setError('');
+    setCopyReport([]);
+    try {
+      const response = await fetch('/api/admin/lineups/copy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clubId, teamId, playDayId }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte kopiera uttagningen');
+      if (payload.lineup) applyLineupUpdate(payload.lineup);
+      setMessage(`Kopierat ${payload.copied} spelare och coach från ${payload.sourceDate}.`);
+      setCopyReport(payload.skipped.map((item: { name: string; reason: string }) => `${item.name}: ${item.reason}`));
+    } catch (error) { setError(error instanceof Error ? error.message : 'Kunde inte kopiera uttagningen'); }
+    finally { setSavingLineup(false); }
+  }
+
+  function historyState(value: Record<string, unknown>) {
+    if ('unavailable' in value) return value.unavailable ? 'Frånvarande' : 'Inte kryssad';
+    const players = (value.players as { playerId: string; sortOrder: number }[] | undefined) ?? [];
+    const names = players.map((item) => {
+      const player = overview?.club.players.find((p) => p.id === item.playerId);
+      return `${item.sortOrder === 8 ? 'Reserv' : item.sortOrder + 1}: ${player ? playerName(player) : 'Borttagen spelare'}`;
+    });
+    return `Coach: ${value.coachName || 'Ingen'}. ${names.join(', ') || 'Inga spelare'}`;
   }
 
   async function copyLineup(team: Team, lineup: Lineup | undefined) {
@@ -458,6 +594,7 @@ export default function AdminPage() {
     return <main className="min-h-screen bg-slate-50 p-6 text-slate-700">Laddar admin...</main>;
   }
 
+  const canEditAbsence = overview.clubs.find((club) => club.id === clubId)?.role === 'ADMIN';
   const memberUrl = `${origin}${overview.memberUrl}`;
 
   return (
@@ -497,6 +634,7 @@ export default function AdminPage() {
           {[
             ['players', 'Spelare & lag'],
             ['absence', 'Frånvaro & QR'],
+            ['history', 'Historik'],
             ['planner', 'TeamPlanner'],
           ].map(([id, label]) => (
             <button
@@ -546,19 +684,19 @@ export default function AdminPage() {
 
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Lag</h2>
-              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto]">
-                <input value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} placeholder="A-lag, F-lag..." className="rounded-md border border-slate-300 px-3 py-2" />
-                <input value={teamForm.swebowlTeamId} onChange={(e) => setTeamForm({ ...teamForm, swebowlTeamId: e.target.value })} placeholder="Swebowl ID" className="rounded-md border border-slate-300 px-3 py-2" />
-                <button className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
+              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <input value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} placeholder="A-lag, F-lag..." className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                <input value={teamForm.swebowlTeamId} onChange={(e) => setTeamForm({ ...teamForm, swebowlTeamId: e.target.value })} placeholder="Swebowl ID" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                <button className="whitespace-nowrap rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
               </form>
               <div className="mt-4 divide-y divide-slate-100">
                 {overview.club.teams.map((team) => (
                   <div key={team.id} className="py-3">
                     {editingTeamId === team.id ? (
-                      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
-                        <input value={teamEditForm.name} onChange={(e) => setTeamEditForm({ ...teamEditForm, name: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" />
-                        <input value={teamEditForm.swebowlTeamId} onChange={(e) => setTeamEditForm({ ...teamEditForm, swebowlTeamId: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" />
-                        <button type="button" onClick={() => saveTeam(team.id)} className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Spara</button>
+                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto]">
+                        <input value={teamEditForm.name} onChange={(e) => setTeamEditForm({ ...teamEditForm, name: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <input value={teamEditForm.swebowlTeamId} onChange={(e) => setTeamEditForm({ ...teamEditForm, swebowlTeamId: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <button type="button" onClick={() => saveTeam(team.id)} className="whitespace-nowrap rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Spara</button>
                         <button type="button" onClick={() => setEditingTeamId('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Avbryt</button>
                       </div>
                     ) : (
@@ -581,7 +719,7 @@ export default function AdminPage() {
         )}
 
         {tab === 'absence' && (
-          <div className="grid gap-5 lg:grid-cols-[24rem_1fr]">
+          <div className="grid gap-5">
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Medlemslänk</h2>
               <input readOnly value={memberUrl} className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
@@ -589,10 +727,12 @@ export default function AdminPage() {
               <div className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">
                 QR-kod kan skapas från den här länken i valfri QR-generator.
               </div>
-              <button onClick={syncSwebowl} className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">Synka från Swebowl</button>
+              <button disabled={syncBusy} onClick={syncSwebowl} className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">{syncBusy ? 'Synkar…' : 'Synka från Swebowl'}</button>
+              {syncChanges && <details open className="mt-4"><summary className="cursor-pointer font-semibold">Resultat av synk</summary><SyncChanges changes={syncChanges} /></details>}
             </section>
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Frånvaro</h2>
+              {canEditAbsence && <p className="mt-1 text-sm text-slate-600">Kryssa i spelare som är frånvarande. Som admin kan du ändra även efter deadline.</p>}
               <div className="mt-4 space-y-4">
                 {overview.club.playRounds.map((round, index) => (
                   <div key={round.id} className="rounded-md border border-slate-200 p-3">
@@ -601,11 +741,29 @@ export default function AdminPage() {
                       <div key={day.id} className="mt-3 border-t border-slate-100 pt-3">
                         <p className="font-semibold">{dayFormatter.format(new Date(day.date))}</p>
                         <p className="text-sm text-slate-600">{day.matches.length} matcher</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {day.absences.length === 0 ? <span className="text-sm text-slate-500">Ingen frånvaro</span> : day.absences.map((absence) => (
-                            <span key={absence.id} className="rounded-md bg-slate-100 px-2 py-1 text-sm">{playerName(absence.player)}</span>
-                          ))}
-                        </div>
+                        {canEditAbsence ? (
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                            {overview.club.players.map((player) => (
+                              <label key={player.id} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={day.absences.some((absence) => absence.playerId === player.id)}
+                                  disabled={savingAbsence}
+                                  onChange={(event) => toggleAdminAbsence(day.id, player.id, event.target.checked)}
+                                  aria-label={`${playerName(player)}, frånvarande ${dayFormatter.format(new Date(day.date))}`}
+                                  className="h-4 w-4 shrink-0 accent-emerald-700"
+                                />
+                                <span className="min-w-0 break-words">{playerName(player)}</span>
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {day.absences.length === 0 ? <span className="text-sm text-slate-500">Ingen frånvaro</span> : day.absences.map((absence) => (
+                              <span key={absence.id} className="rounded-md bg-slate-100 px-2 py-1 text-sm">{playerName(absence.player)}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -613,6 +771,28 @@ export default function AdminPage() {
               </div>
             </section>
           </div>
+        )}
+
+        {tab === 'history' && (
+          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-xl font-bold">Ändringshistorik</h2>
+            <p className="mt-1 text-sm text-slate-600">Historiken börjar när funktionen aktiverades. Ändringar via medlemslänken saknar verifierad avsändare. Ångra återställer den valda ändringen om uppgifterna inte har ändrats igen.</p>
+            <button disabled={historyBusy} onClick={() => loadHistory()} className="mt-3 rounded-md border px-3 py-2 text-sm">Uppdatera</button>
+            {!history.length && <p className="mt-4 text-sm">{historyBusy ? 'Laddar…' : 'Inga registrerade ändringar.'}</p>}
+            <div className="mt-4 space-y-3">{history.map((entry) => (
+              <article key={entry.id} className="rounded-md border border-slate-200 p-3">
+                <p className="font-semibold">{entry.summary}</p>
+                <p className="text-sm text-slate-600">{new Date(entry.createdAt).toLocaleString('sv-SE')} · {entry.actorName}</p>
+                {entry.currentStatus && <p className="mt-2 font-semibold text-slate-800">Nuvarande status: {entry.currentStatus}</p>}
+                {entry.kind === 'SYNC' ? <details className="mt-2"><summary className="cursor-pointer text-sm">Visa matchändringar</summary>
+                  {Boolean(entry.after.deletionSkipped) && <p className="text-sm">Ofullständigt underlag: inga saknade matcher togs bort.</p>}
+                  <SyncChanges changes={(entry.after.changes as SyncChange[]) ?? []} />
+                </details> : <details className="mt-2 text-sm"><summary className="cursor-pointer">Visa före och efter</summary><p>Före: {historyState(entry.before)}</p><p>Efter: {historyState(entry.after)}</p></details>}
+                {entry.undoneAt ? <p className="mt-2 text-sm text-slate-600">Ångrad av {entry.undoneBy} · {new Date(entry.undoneAt).toLocaleString('sv-SE')}</p> : entry.kind !== 'SYNC' && canEditAbsence && <button disabled={historyBusy} onClick={() => undoHistory(entry.id)} className="mt-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold">Ångra ändring</button>}
+              </article>
+            ))}</div>
+            {historyCursor && <button disabled={historyBusy} onClick={() => loadHistory(historyCursor)} className="mt-4 rounded-md border px-3 py-2 text-sm">Visa äldre</button>}
+          </section>
         )}
 
         {tab === 'planner' && (
@@ -626,31 +806,45 @@ export default function AdminPage() {
               </select>
             </section>
 
-            {planner && (
+            {copyReport.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold">Dessa spelare kopierades inte:</p><ul className="mt-2 list-inside list-disc">{copyReport.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+            {planner && planner.playRound.id === selectedRoundId && (
               <div className="grid gap-5 xl:grid-cols-[20rem_1fr]">
                 <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                     <h2 className="text-xl font-bold">Spelarpool</h2>
                     <p className="text-xs font-semibold text-slate-500">Tryck spelare, tryck plats</p>
                   </div>
+                  <label className="mt-3 block text-sm font-semibold" htmlFor="target-team">Visa tillgänglighet för</label>
+                  <select id="target-team" value={targetTeamId} onChange={(event) => setTargetTeamId(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm">
+                    <option value="">Alla lag</option>
+                    {planner.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
+                  </select>
+                  <p className="mt-2 text-xs text-slate-600">Gul: redan uttagen. Röd: inte tillgänglig för valt lag. Högst två lag per spelare och en gemensam spelare per lagpar.</p>
                   <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1 xl:max-h-none xl:overflow-visible xl:pr-0">
                     {planner.players.map((player) => {
                       const placed = placedPlayerIds.has(player.id);
                       const selected = selectedPlannerPlayerId === player.id;
+                      const playerTeams = planner.teams.filter((team) => planner.lineups.some((lineup) => lineup.teamId === team.id && lineup.players.some((item) => item.playerId === player.id)));
+                      const targetPlan = planner.teamPlans.find((plan) => plan.team.id === targetTeamId);
+                      const targetAbsent = targetPlan?.playDay?.absences.some((absence) => absence.playerId === player.id);
+                      const conflict = targetTeamId ? getLineupConflict(planner.lineups, player.id, targetTeamId, undefined, targetPlan?.playDay?.id) : null;
                       const unavailableDays = planner.days
                         .filter((day) => day.absences.some((absence) => absence.playerId === player.id))
                         .map((day) => dayFormatter.format(new Date(day.date)));
                       const absentAllRound = planner.days.length > 0 && unavailableDays.length === planner.days.length;
+                      const reason = absentAllRound ? 'Frånvarande hela omgången' : targetAbsent ? 'Frånvarande på lagets speldag' : conflict;
                       return (
                         <div
                           key={player.id}
-                          draggable={!absentAllRound}
+                          title={reason ?? undefined}
+                          draggable={!absentAllRound && !savingLineup}
                           onDragStart={(event) => event.dataTransfer.setData('playerId', player.id)}
                           onClick={() => !absentAllRound && setSelectedPlannerPlayerId(selected ? '' : player.id)}
-                          className={`cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold ${selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : absentAllRound ? 'cursor-not-allowed border-red-200 bg-red-50 text-red-800' : placed ? 'border-slate-200 bg-slate-100 text-slate-500' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
+                          className={`cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold ${reason ? 'border-red-200 bg-red-50 text-red-800' : selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : placed ? 'border-amber-200 bg-amber-50 text-amber-900' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
                         >
                           {plannerName(player)}
-                          {absentAllRound ? ' - frånvarande' : unavailableDays.length > 0 ? ` - kan inte ${unavailableDays.join(', ')}` : placed ? ' - placerad' : ''}
+                          {playerTeams.length > 0 && <span className="block text-xs">Uttagen: {playerTeams.map((team) => team.name).join(', ')}</span>}
+                          {reason ? <span className="block text-xs">{reason}</span> : unavailableDays.length > 0 && <span className="block text-xs">Kan inte {unavailableDays.join(', ')}</span>}
                         </div>
                       );
                     })}
@@ -678,11 +872,21 @@ export default function AdminPage() {
                           </button>
                         </div>
 
+                        <button disabled={!playDay || savingLineup || Boolean(lineup?.players.length || lineup?.coachName)}
+                          onClick={() => playDay && copyPrevious(team.id, playDay.id)}
+                          title="Kopiera spelare och coach till ett tomt lag. Frånvarande spelare hoppas över."
+                          className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50">Kopiera föregående uttagning</button>
                         <label className="mt-4 block text-sm font-semibold text-slate-900">Coach</label>
                         <input
+                          key={`${planner.playRound.id}-${team.id}-${playDay?.id}-${lineup?.coachName ?? ''}`}
                           defaultValue={lineup?.coachName ?? ''}
                           disabled={!playDay}
-                          onBlur={(event) => playDay && saveCoach(team.id, playDay.id, event.target.value)}
+                          onBlur={(event) => {
+                            const coachName = event.target.value.trim();
+                            if (playDay && coachName !== (lineup?.coachName ?? '')) {
+                              void saveCoach(team.id, playDay.id, coachName);
+                            }
+                          }}
                           placeholder="Namn på coach"
                           className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         />

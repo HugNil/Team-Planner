@@ -1,9 +1,12 @@
 import type { NextConfig } from "next";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 
-const nextConfig: NextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-};
-
-export default nextConfig;
+export default function nextConfig(phase: string): NextConfig {
+  return {
+    // A production build must not overwrite a running development server's files.
+    distDir: phase === PHASE_DEVELOPMENT_SERVER ? ".next-dev" : ".next",
+    eslint: {
+      ignoreDuringBuilds: true,
+    },
+  };
+}

@@ -10,6 +10,8 @@ export type SwebowlMatch = {
   location?: string;
   sourceTeamName?: string;
   roundNumber?: number;
+  // Calendar feeds omit past matches and cannot authorize deletions.
+  incompleteFeed?: boolean;
 };
 
 type SwebowlApiTeam = {
@@ -69,7 +71,7 @@ function getCookieHeader(cookies: string[]) {
 }
 
 function parseIcsDate(value: string) {
-  const dateMatch = value.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?/);
+  const dateMatch = value.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})Z?)?$/);
 
   if (!dateMatch) {
     return null;
@@ -96,32 +98,53 @@ function splitTeams(summary: string) {
   };
 }
 
-function parseCalendarMatches(text: string, teamId: string): SwebowlMatch[] {
+function parseCalendarMatches(text: string, teamId: string, useApiIds = false): SwebowlMatch[] {
   const unfolded = unfoldIcs(text);
+  if (!/^BEGIN:VCALENDAR\s*$/m.test(unfolded) || !/^END:VCALENDAR\s*$/m.test(unfolded)) {
+    throw new Error('Ogiltig eller ofullständig Swebowl-kalender');
+  }
   const events = unfolded.match(/BEGIN:VEVENT[\s\S]*?END:VEVENT/g) ?? [];
 
+  if ((unfolded.match(/BEGIN:VEVENT/g) ?? []).length !== events.length) {
+    throw new Error('Ofullständig Swebowl-kalender');
+  }
+
   return events.flatMap((event) => {
-    const uid = getIcsField(event, 'UID') || `team-${teamId}-${getIcsField(event, 'DTSTART')}-${getIcsField(event, 'SUMMARY')}`;
+    const uid = getIcsField(event, 'UID');
     const summary = getIcsField(event, 'SUMMARY');
     const description = getIcsField(event, 'DESCRIPTION');
     const location = getIcsField(event, 'LOCATION') || undefined;
     const start = parseIcsDate(getIcsField(event, 'DTSTART'));
 
-    if (!summary || !start) {
-      return [];
+    if (!uid || !summary || !start || !Number.isFinite(start.getTime())) {
+      throw new Error('Swebowl-match saknar stabilt ID, giltigt datum eller lagnamn');
     }
 
+    const apiMatchId = uid.match(/^match-(\d+)@swebowl\.se$/i)?.[1];
+    if (useApiIds && !apiMatchId) {
+      throw new Error('Kalendern saknar match-ID som kan kopplas till befintliga matcher');
+    }
     const { homeTeam, awayTeam } = splitTeams(summary);
 
     return [{
-      externalId: `swebowl-calendar-${teamId}-${uid}`,
+      externalId: useApiIds ? `swebowl-match-${apiMatchId}` : `swebowl-calendar-${teamId}-${uid}`,
+      incompleteFeed: true,
       homeTeam,
       awayTeam,
       date: start,
       location,
-      sourceTeamName: description || undefined,
+      sourceTeamName: useApiIds ? teamId : description || undefined,
     }];
   });
+}
+
+class SwebowlHttpError extends Error {
+  constructor(readonly status: number) { super(`Swebowl API svarade ${status}`); }
+}
+
+function blockedApiFallback(error: unknown): null {
+  if (error instanceof SwebowlHttpError && [401, 403].includes(error.status)) return null;
+  throw error;
 }
 
 async function fetchJson<T>(path: string, params: Record<string, string | number | undefined> = {}) {
@@ -145,7 +168,7 @@ async function fetchJson<T>(path: string, params: Record<string, string | number
   });
 
   if (!response.ok) {
-    throw new Error(`Swebowl API svarade ${response.status}`);
+    throw new SwebowlHttpError(response.status);
   }
 
   return response.json() as Promise<T>;
@@ -203,7 +226,7 @@ async function fetchJsonWithBitsCookies<T>(path: string, params: Record<string, 
   });
 
   if (!response.ok) {
-    throw new Error(`Swebowl API svarade ${response.status}`);
+    throw new SwebowlHttpError(response.status);
   }
 
   return response.json() as Promise<T>;
@@ -222,7 +245,7 @@ async function fetchTeamsFromApi(clubName: string, seasonId: number) {
     seasonId,
   });
 
-  return teams.filter((team) => normalize(team.teamName).startsWith(normalize(clubName))).slice(0, 4);
+  return teams.filter((team) => normalize(team.teamName).startsWith(normalize(clubName)));
 }
 
 async function fetchMatchesFromApi(team: SwebowlApiTeam, seasonId: number) {
@@ -234,7 +257,9 @@ async function fetchMatchesFromApi(team: SwebowlApiTeam, seasonId: number) {
     teamId: teamRef.teamId,
     divisionId: teamRef.divisionId,
     seasonId,
-  }, teamRef, seasonId);
+  }, teamRef, seasonId).catch(blockedApiFallback);
+
+  if (matches === null) return fetchMatchesFromCalendar(teamRef.teamId, seasonId, true);
 
   return matches.flatMap((match) => {
     const matchId = match.matchId ?? match.MatchId;
@@ -242,8 +267,8 @@ async function fetchMatchesFromApi(team: SwebowlApiTeam, seasonId: number) {
     const awayTeam = match.matchAwayTeamName ?? match.awayTeamName;
     const dateValue = match.matchDateTime ?? match.matchDatetime;
 
-    if (!matchId || !homeTeam || !awayTeam || !dateValue) {
-      return [];
+    if (!matchId || !homeTeam || !awayTeam || !dateValue || !Number.isFinite(new Date(dateValue).getTime())) {
+      throw new Error('Swebowl-match saknar stabilt ID, giltigt datum eller lagnamn');
     }
 
     return [{
@@ -267,7 +292,9 @@ async function fetchMatchesFromApiTeamRef(teamRef: SwebowlTeamRef, seasonId: num
     teamId: teamRef.teamId,
     divisionId: teamRef.divisionId,
     seasonId,
-  }, teamRef, seasonId);
+  }, teamRef, seasonId).catch(blockedApiFallback);
+
+  if (matches === null) return fetchMatchesFromCalendar(teamRef.teamId, seasonId, true);
 
   return matches.flatMap((match) => {
     const matchId = match.matchId ?? match.MatchId;
@@ -275,8 +302,8 @@ async function fetchMatchesFromApiTeamRef(teamRef: SwebowlTeamRef, seasonId: num
     const awayTeam = match.matchAwayTeamName ?? match.awayTeamName;
     const dateValue = match.matchDateTime ?? match.matchDatetime;
 
-    if (!matchId || !homeTeam || !awayTeam || !dateValue) {
-      return [];
+    if (!matchId || !homeTeam || !awayTeam || !dateValue || !Number.isFinite(new Date(dateValue).getTime())) {
+      throw new Error('Swebowl-match saknar stabilt ID, giltigt datum eller lagnamn');
     }
 
     return [{
@@ -291,7 +318,7 @@ async function fetchMatchesFromApiTeamRef(teamRef: SwebowlTeamRef, seasonId: num
   });
 }
 
-async function fetchMatchesFromCalendar(teamId: string, seasonId: number) {
+async function fetchMatchesFromCalendar(teamId: string, seasonId: number, useApiIds = false) {
   const url = `${SWEBOWL_CALENDAR_BASE}/${teamId}?seasonId=${seasonId}&nocache`;
   const response = await fetch(url, { cache: 'no-store' });
 
@@ -299,7 +326,7 @@ async function fetchMatchesFromCalendar(teamId: string, seasonId: number) {
     throw new Error(`Swebowl kalender svarade ${response.status} för lag ${teamId}`);
   }
 
-  return parseCalendarMatches(await response.text(), teamId);
+  return parseCalendarMatches(await response.text(), teamId, useApiIds);
 }
 
 function uniqueMatches(matches: SwebowlMatch[]) {
@@ -322,6 +349,7 @@ function uniqueMatches(matches: SwebowlMatch[]) {
 
     byExternalId.set(match.externalId, {
       ...existing,
+      incompleteFeed: existing.incompleteFeed || match.incompleteFeed,
       sourceTeamName: sourceTeamNames.size > 0 ? [...sourceTeamNames].join(',') : existing.sourceTeamName,
       roundNumber: existing.roundNumber ?? match.roundNumber,
     });
@@ -347,12 +375,15 @@ export async function fetchSwebowlMatches(options: {
     const results = await Promise.allSettled(
       teamRefs.map((teamRef) => fetchMatchesFromApiTeamRef(teamRef, options.seasonId)),
     );
-    const matches = results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+    const failedTeams = results.flatMap((result, index) =>
+      result.status === 'rejected' ? [teamRefs[index].teamId] : [],
+    );
 
-    if (matches.length === 0) {
-      const firstError = results.find((result) => result.status === 'rejected');
-      throw new Error(firstError?.status === 'rejected' && firstError.reason instanceof Error ? firstError.reason.message : 'Swebowl kalender svarade utan matcher');
+    if (failedTeams.length > 0) {
+      throw new Error(`Synk avbruten: kunde inte hämta matcher för lag ${failedTeams.join(', ')}. Inga matcher har ändrats. Försök igen.`);
     }
+
+    const matches = results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
 
     return uniqueMatches(matches);
   }

@@ -1,5 +1,8 @@
+import type { Prisma } from '@prisma/client';
 import { NextResponse } from 'next/server';
 import { requireClubAccess } from '@/app/lib/admin-auth';
+import { recordChange } from '@/app/lib/change-history';
+import { getLineupConflict } from '@/app/lib/lineup-eligibility';
 import { prisma } from '@/app/lib/prisma';
 
 function normalize(value: string | null | undefined) {
@@ -118,17 +121,20 @@ export async function PATCH(req: Request) {
     if (action === 'remove') {
       const playDay = await prisma.playDay.findFirst({ where: { id: playDayId, clubId }, select: { id: true } });
 
-      if (!playDay || !playerId) {
+      if (!playDay || !playerId || !teamId) {
         return NextResponse.json({ error: 'Fel klubb, dag, lag eller spelare' }, { status: 400 });
       }
 
-      await prisma.lineupPlayer.deleteMany({
+      await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+        { kind: 'LINEUP', playDayId, teamId }, 'Spelare borttagen', async (tx) => {
+      await tx.lineupPlayer.deleteMany({
         where: {
           playerId,
-          lineup: { playDayId, clubId },
+          lineup: { playDayId, clubId, teamId },
         },
       });
 
+      });
       return NextResponse.json({ ok: true, playerId });
     }
 
@@ -149,13 +155,16 @@ export async function PATCH(req: Request) {
     }
 
     if (action === 'coach') {
-      const lineup = await prisma.lineup.upsert({
+      const lineup = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+        { kind: 'LINEUP', playDayId, teamId }, coachName ? 'Coach ändrad' : 'Coach borttagen', async (tx) => {
+      return tx.lineup.upsert({
         where: { playDayId_teamId: { playDayId, teamId } },
         create: { clubId, playDayId, teamId, coachName: coachName || null },
         update: { coachName: coachName || null },
         include: lineupInclude,
       });
 
+      });
       return NextResponse.json({ ok: true, lineup });
     }
 
@@ -178,38 +187,35 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'Spelaren är kryssad som frånvarande den dagen' }, { status: 409 });
     }
 
-    const lineup = await prisma.lineup.upsert({
-      where: { playDayId_teamId: { playDayId, teamId } },
-      create: { clubId, playDayId, teamId },
-      update: {},
+    if (!Number.isInteger(sortOrder)) {
+      return NextResponse.json({ error: 'Ogiltig plats' }, { status: 400 });
+    }
+    const result = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+      { kind: 'LINEUP', playDayId, teamId }, 'Laguttagning ändrad', async (tx: Prisma.TransactionClient) => {
+      // Serialize changes in this round so simultaneous assignments cannot
+      // both claim the same shared-player allowance.
+      await tx.$queryRaw`SELECT id FROM "PlayRound" WHERE id = ${playDay.playRoundId} FOR UPDATE`;
+      const roundLineups = await tx.lineup.findMany({
+        where: { clubId, playDay: { playRoundId: playDay.playRoundId } },
+        include: { players: true },
+      });
+      const conflict = getLineupConflict(roundLineups, playerId, teamId, sortOrder, playDayId);
+      if (conflict) return { conflict, lineup: null };
+      const lineup = await tx.lineup.upsert({
+        where: { playDayId_teamId: { playDayId, teamId } },
+        create: { clubId, playDayId, teamId },
+        update: {},
+      });
+      await tx.lineupPlayer.deleteMany({
+        where: { lineupId: lineup.id, OR: [{ playerId }, { sortOrder }] },
+      });
+      await tx.lineupPlayer.create({ data: { lineupId: lineup.id, playerId, sortOrder } });
+      return { conflict: null, lineup: await tx.lineup.findUnique({
+        where: { id: lineup.id }, include: lineupInclude,
+      }) };
     });
-
-    await prisma.$transaction([
-      prisma.lineupPlayer.deleteMany({
-        where: {
-          playerId,
-          lineup: { playDayId, clubId },
-        },
-      }),
-      prisma.lineupPlayer.deleteMany({
-        where: {
-          lineupId: lineup.id,
-          sortOrder,
-        },
-      }),
-      prisma.lineupPlayer.create({
-        data: {
-          lineupId: lineup.id,
-          playerId,
-          sortOrder,
-        },
-      }),
-    ]);
-
-    const updatedLineup = await prisma.lineup.findUnique({
-      where: { id: lineup.id },
-      include: lineupInclude,
-    });
+    if (result.conflict) return NextResponse.json({ error: result.conflict }, { status: 409 });
+    const updatedLineup = result.lineup;
 
     return NextResponse.json({ ok: true, lineup: updatedLineup, playerId });
   } catch (error: unknown) {
