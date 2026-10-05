@@ -2,6 +2,7 @@
 
 import { SyncChanges } from './components/sync-changes';
 import type { SyncChange } from '@/app/lib/sync-summary';
+import { swapLineupPlayers, type LineupSlot } from '@/app/lib/lineup-swap';
 import { getLineupConflict } from '@/app/lib/lineup-eligibility';
 import { signOut, useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
@@ -442,12 +443,27 @@ export default function AdminPage() {
     };
   }, [tab, selectedRoundId, clubId]);
 
-  async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number) {
+  async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number, source?: LineupSlot) {
     if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
-    const conflict = getLineupConflict(planner.lineups, playerId, teamId, sortOrder, playDayId);
-    if (conflict) { setError(conflict); return; }
+    const targetLineup = planner.lineups.find((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId);
+    const swap = Boolean(source && targetLineup?.players.some((player) => player.sortOrder === sortOrder));
     const previousPlanner = planner;
-    applyOptimisticAssign(playerId, teamId, playDayId, sortOrder);
+    if (swap && source) {
+      try {
+        const lineups = swapLineupPlayers(planner.lineups, source, { teamId, playDayId, sortOrder }, playerId);
+        if (lineups === planner.lineups) return;
+        setPlanner({ ...planner, lineups, teamPlans: planner.teamPlans.map((plan) => ({
+          ...plan, lineup: lineups.find((lineup) => lineup.id === plan.lineup?.id) ?? plan.lineup,
+        })) });
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Kunde inte byta plats');
+        return;
+      }
+    } else {
+      const conflict = getLineupConflict(planner.lineups, playerId, teamId, sortOrder, playDayId);
+      if (conflict) { setError(conflict); return; }
+      applyOptimisticAssign(playerId, teamId, playDayId, sortOrder);
+    }
 
     setSavingLineup(true);
     lineupSaveInProgress.current = true;
@@ -455,7 +471,7 @@ export default function AdminPage() {
       const response = await fetch('/api/admin/lineups', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clubId, playDayId, teamId, playerId, sortOrder, action: 'add' }),
+        body: JSON.stringify({ clubId, playDayId, teamId, playerId, sortOrder, source, action: swap ? 'swap' : 'add' }),
       });
       const payload = await response.json();
 
@@ -467,6 +483,9 @@ export default function AdminPage() {
 
       setError('');
       setSelectedPlannerPlayerId('');
+      if (payload.lineups) {
+        for (const lineup of payload.lineups) applyLineupUpdate(lineup);
+      }
       if (payload.lineup) {
         applyLineupUpdate(payload.lineup);
       }
@@ -981,14 +1000,18 @@ export default function AdminPage() {
                                   <div
                                     key={slot}
                                     onDragOver={(event) => event.preventDefault()}
-                                    onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot)}
+                                    onDrop={(event) => {
+                                      event.preventDefault();
+                                      const source = event.dataTransfer.getData('lineupSource');
+                                      if (playDay) void assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot, source ? JSON.parse(source) : undefined);
+                                    }}
                                     onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, slot)}
                                     className={`min-h-14 min-w-0 rounded-md border px-2 py-2 text-sm sm:px-3 ${selectedPlannerPlayerId && !item ? 'cursor-pointer ring-2 ring-emerald-100' : ''} ${item ? 'border-white bg-white font-semibold text-emerald-950 shadow-sm' : 'border-dashed border-emerald-200 bg-emerald-50 text-emerald-700'}`}
                                   >
                                     {item ? (
                                       <div
                                         draggable
-                                        onDragStart={(event) => event.dataTransfer.setData('playerId', item.playerId)}
+                                        onDragStart={(event) => { event.dataTransfer.setData('playerId', item.playerId); event.dataTransfer.setData('lineupSource', JSON.stringify({ teamId: team.id, playDayId: playDay?.id, sortOrder: slot })); }}
                                         className="flex min-w-0 items-center justify-between gap-2"
                                       >
                                         <span className="min-w-0 truncate">{plannerName(item.player)}</span>
@@ -1022,13 +1045,17 @@ export default function AdminPage() {
                               <div
                                 key={slot}
                                 onDragOver={(event) => event.preventDefault()}
-                                onDrop={(event) => playDay && assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot)}
+                                onDrop={(event) => {
+                                      event.preventDefault();
+                                      const source = event.dataTransfer.getData('lineupSource');
+                                      if (playDay) void assignPlayer(event.dataTransfer.getData('playerId'), team.id, playDay.id, slot, source ? JSON.parse(source) : undefined);
+                                    }}
                                 onClick={() => playDay && selectedPlannerPlayerId && assignPlayer(selectedPlannerPlayerId, team.id, playDay.id, slot)}
                                 className={`rounded-md border border-amber-200 bg-amber-50 p-2 ${selectedPlannerPlayerId && !reservePlayer ? 'cursor-pointer ring-2 ring-amber-100' : ''}`}
                               >
                                 <p className="mb-2 text-xs font-semibold uppercase text-amber-800">{reserveLabel}</p>
                                 {reservePlayer ? (
-                                  <div draggable onDragStart={(event) => event.dataTransfer.setData('playerId', reservePlayer.playerId)} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm">
+                                  <div draggable onDragStart={(event) => { event.dataTransfer.setData('playerId', reservePlayer.playerId); event.dataTransfer.setData('lineupSource', JSON.stringify({ teamId: team.id, playDayId: playDay?.id, sortOrder: slot })); }} className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm font-semibold text-amber-950 shadow-sm">
                                     <span className="min-w-0 truncate">{plannerName(reservePlayer.player)}</span>
                                     <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); playDay && removePlayer(reservePlayer.playerId, team.id, playDay.id); }} aria-label={`Ta bort ${plannerName(reservePlayer.player)}`} title="Ta bort" className="grid h-6 w-6 place-items-center rounded-full text-base leading-none text-red-700 hover:bg-red-50">×</button>
                                   </div>

@@ -2,8 +2,9 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 
 export type Actor = { id?: string; name: string };
 export type Target = { kind: 'ABSENCE'; playDayId: string; playerId: string }
-  | { kind: 'LINEUP'; playDayId: string; teamId: string };
-export type Snapshot = { unavailable: boolean } | { coachName: string | null; players: { playerId: string; sortOrder: number }[] };
+  | { kind: 'LINEUP'; playDayId: string; teamId: string; swapWith?: { playDayId: string; teamId: string } };
+type LineupSnapshot = { coachName: string | null; players: { playerId: string; sortOrder: number }[]; swapWith?: LineupSnapshot };
+export type Snapshot = { unavailable: boolean } | LineupSnapshot;
 export class ChangeError extends Error {
   constructor(message: string, public status = 409) { super(message); }
 }
@@ -25,7 +26,8 @@ async function snapshot(tx: Prisma.TransactionClient, clubId: string, target: Ta
   }
   if (!await tx.team.findFirst({ where: { id: target.teamId, clubId } })) throw new ChangeError('Laget finns inte i klubben.', 404);
   const lineup = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId: target.playDayId, teamId: target.teamId } }, include: { players: { orderBy: [{ sortOrder: 'asc' }, { playerId: 'asc' }] } } });
-  return { coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [] };
+  return { coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [],
+    ...(target.swapWith ? { swapWith: await snapshot(tx, clubId, { kind: 'LINEUP', ...target.swapWith }) as LineupSnapshot } : {}) };
 }
 export async function recordChange<T>(db: PrismaClient, clubId: string, actor: Actor, target: Target,
   summary: string, mutate: (tx: Prisma.TransactionClient) => Promise<T>) {
@@ -59,17 +61,23 @@ export async function undoChange(db: PrismaClient, clubId: string, id: string, a
       if (before.unavailable) await tx.dayAbsence.upsert({ where, create: where.playDayId_playerId, update: {} });
       else await tx.dayAbsence.deleteMany({ where: where.playDayId_playerId });
     } else if (target.kind === 'LINEUP' && 'players' in before) {
-      const count = await tx.player.count({ where: { clubId, id: { in: before.players.map((p) => p.playerId) } } });
-      if (count !== before.players.length) throw new ChangeError('En spelare har tagits bort. Uttagningen kan inte återställas.');
-      const currentPlayers = 'players' in current ? new Set(current.players.map((p) => p.playerId)) : new Set<string>();
-      const restoredIds = before.players.filter((p) => !currentPlayers.has(p.playerId)).map((p) => p.playerId);
-      if (restoredIds.length && await tx.dayAbsence.count({ where: { playDayId: target.playDayId, playerId: { in: restoredIds } } })) {
-        throw new ChangeError('En spelare som skulle återställas är nu kryssad som frånvarande. Kontrollera frånvaron först.');
+      const restore = async (lineupTarget: { playDayId: string; teamId: string }, saved: LineupSnapshot, existing: Snapshot) => {
+        const count = await tx.player.count({ where: { clubId, id: { in: saved.players.map((p) => p.playerId) } } });
+        if (count !== saved.players.length) throw new ChangeError('En spelare har tagits bort. Uttagningen kan inte återställas.');
+        const currentPlayers = 'players' in existing ? new Set(existing.players.map((p) => p.playerId)) : new Set<string>();
+        const restoredIds = saved.players.filter((p) => !currentPlayers.has(p.playerId)).map((p) => p.playerId);
+        if (restoredIds.length && await tx.dayAbsence.count({ where: { playDayId: lineupTarget.playDayId, playerId: { in: restoredIds } } })) {
+          throw new ChangeError('En spelare som skulle återställas är nu kryssad som frånvarande. Kontrollera frånvaron först.');
+        }
+        const lineup = await tx.lineup.upsert({ where: { playDayId_teamId: { playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId } },
+          create: { clubId, playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId, coachName: saved.coachName }, update: { coachName: saved.coachName } });
+        await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });
+        if (saved.players.length) await tx.lineupPlayer.createMany({ data: saved.players.map((p) => ({ ...p, lineupId: lineup.id })) });
+      };
+      await restore(target, before, current);
+      if (target.swapWith && before.swapWith && 'players' in current && current.swapWith) {
+        await restore(target.swapWith, before.swapWith, current.swapWith);
       }
-      const lineup = await tx.lineup.upsert({ where: { playDayId_teamId: { playDayId: target.playDayId, teamId: target.teamId } },
-        create: { clubId, playDayId: target.playDayId, teamId: target.teamId, coachName: before.coachName }, update: { coachName: before.coachName } });
-      await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });
-      if (before.players.length) await tx.lineupPlayer.createMany({ data: before.players.map((p) => ({ ...p, lineupId: lineup.id })) });
     } else throw new ChangeError('Historikposten kan inte återställas.');
     await tx.changeLog.update({ where: { id }, data: { undoneAt: new Date(), undoneBy: actor.name } });
   }, { timeout: 15_000 });
