@@ -1,8 +1,9 @@
 import type { Prisma } from '@prisma/client';
 import { NextResponse } from 'next/server';
 import { requireClubAccess } from '@/app/lib/admin-auth';
-import { recordChange } from '@/app/lib/change-history';
+import { ChangeError, recordChange } from '@/app/lib/change-history';
 import { getLineupConflict } from '@/app/lib/lineup-eligibility';
+import { swapLineupPlayers, type LineupSlot } from '@/app/lib/lineup-swap';
 import { prisma } from '@/app/lib/prisma';
 import { broadcastTeamPlannerUpdate } from '@/app/lib/team-planner-realtime';
 
@@ -171,6 +172,49 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: true, lineup });
     }
 
+    if (action === 'swap') {
+      const source: LineupSlot = {
+        teamId: String(body.source?.teamId ?? ''),
+        playDayId: String(body.source?.playDayId ?? ''),
+        sortOrder: Number(body.source?.sortOrder),
+      };
+      if (!Number.isInteger(source.sortOrder) || source.sortOrder < 0 || source.sortOrder > 9 || !Number.isInteger(sortOrder)) {
+        return NextResponse.json({ error: 'Ogiltig plats' }, { status: 400 });
+      }
+      const sameLineup = source.teamId === teamId && source.playDayId === playDayId;
+      const lineups = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+        { kind: 'LINEUP', playDayId, teamId, ...(sameLineup ? {} : { swapWith: { teamId: source.teamId, playDayId: source.playDayId } }) },
+        'Spelare bytte plats', async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "PlayRound" WHERE id = ${playDay.playRoundId} FOR UPDATE`;
+          const roundLineups = await tx.lineup.findMany({
+            where: { clubId, playDay: { playRoundId: playDay.playRoundId } }, include: { players: true },
+          });
+          let next;
+          try {
+            next = swapLineupPlayers(roundLineups, source, { teamId, playDayId, sortOrder }, playerId);
+          } catch (error) {
+            throw new ChangeError(error instanceof Error ? error.message : 'Kunde inte byta plats');
+          }
+          const affected = next.filter((lineup) =>
+            (lineup.teamId === teamId && lineup.playDayId === playDayId) ||
+            (lineup.teamId === source.teamId && lineup.playDayId === source.playDayId));
+          for (const lineup of affected) {
+            const original = roundLineups.find((item) => item.id === lineup.id)!;
+            const arriving = lineup.players.filter((player) => !original.players.some((item) => item.playerId === player.playerId));
+            if (arriving.length && await tx.dayAbsence.count({ where: { playDayId: lineup.playDayId, playerId: { in: arriving.map((player) => player.playerId) } } })) {
+              throw new ChangeError('Spelaren är kryssad som frånvarande den dagen');
+            }
+          }
+          for (const lineup of affected) {
+            await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });
+            await tx.lineupPlayer.createMany({ data: lineup.players.map(({ playerId, sortOrder }) => ({ lineupId: lineup.id, playerId, sortOrder })) });
+          }
+          return tx.lineup.findMany({ where: { id: { in: affected.map((lineup) => lineup.id) } }, include: lineupInclude });
+        });
+      broadcastTeamPlannerUpdate(clubId);
+      return NextResponse.json({ ok: true, lineups });
+    }
+
     const player = await prisma.player.findFirst({ where: { id: playerId, clubId } });
 
     if (!player) {
@@ -223,6 +267,7 @@ export async function PATCH(req: Request) {
     broadcastTeamPlannerUpdate(clubId);
     return NextResponse.json({ ok: true, lineup: updatedLineup, playerId });
   } catch (error: unknown) {
+    if (error instanceof ChangeError) return NextResponse.json({ error: error.message }, { status: error.status });
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
