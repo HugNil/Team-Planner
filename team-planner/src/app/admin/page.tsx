@@ -80,6 +80,57 @@ export default function AdminPage() {
   const [savingLineup, setSavingLineup] = useState(false);
   const [selectedPlannerPlayerId, setSelectedPlannerPlayerId] = useState('');
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
+  const [viewReady, setViewReady] = useState(false);
+  const restoreScroll = useRef<number | null>(null);
+  const viewStorageKey = 'team-planner:admin-view';
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(viewStorageKey) ?? 'null');
+      if (saved && typeof saved === 'object') {
+        if (['players', 'absence', 'planner', 'history'].includes(saved.tab)) setTab(saved.tab);
+        if (typeof saved.clubId === 'string') setClubId(saved.clubId);
+        if (typeof saved.roundId === 'string') setSelectedRoundId(saved.roundId);
+        if (typeof saved.targetTeamId === 'string') setTargetTeamId(saved.targetTeamId);
+        if (['ALL', 'ABSENCE', 'LINEUP', 'SYNC', 'UNDONE'].includes(saved.historyFilter)) setHistoryFilter(saved.historyFilter);
+        if (Number.isFinite(saved.scrollY) && saved.scrollY >= 0) restoreScroll.current = saved.scrollY;
+      }
+    } catch { /* Storage can be disabled or contain an old value. */ }
+    setViewReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!viewReady || !overview || overview.activeClubId !== clubId) return;
+    const save = () => {
+      try {
+        sessionStorage.setItem(viewStorageKey, JSON.stringify({
+          tab, clubId, roundId: selectedRoundId, targetTeamId, historyFilter,
+          scrollY: restoreScroll.current ?? window.scrollY,
+        }));
+      } catch { /* Navigation still works without browser storage. */ }
+    };
+    save();
+    window.addEventListener('pagehide', save);
+    window.addEventListener('scroll', save, { passive: true });
+    return () => {
+      window.removeEventListener('pagehide', save);
+      window.removeEventListener('scroll', save);
+    };
+  }, [viewReady, overview, clubId, tab, selectedRoundId, targetTeamId, historyFilter]);
+
+  useEffect(() => {
+    if (!overview || restoreScroll.current === null) return;
+    if (tab === 'planner' && selectedRoundId && planner?.playRound.id !== selectedRoundId) return;
+    if (tab === 'history' && historyBusy) return;
+    const frame = requestAnimationFrame(() => {
+      if (restoreScroll.current !== null) {
+        window.scrollTo({ top: restoreScroll.current, behavior: 'instant' });
+        restoreScroll.current = null;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [overview, planner, selectedRoundId, tab, historyBusy]);
+
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -88,11 +139,12 @@ export default function AdminPage() {
   }, [router, status]);
 
   async function loadOverview(nextClubId = clubId) {
-    const suffix = nextClubId ? `?clubId=${nextClubId}` : '';
+    const suffix = nextClubId ? `?clubId=${encodeURIComponent(nextClubId)}` : '';
     const response = await fetch(`/api/admin/overview${suffix}`);
     const payload = await response.json();
 
     if (!response.ok) {
+      if (nextClubId && (response.status === 403 || response.status === 404)) return loadOverview('');
       if (response.status === 401) {
         await signOut({ callbackUrl: '/login', redirect: true });
         return;
@@ -102,14 +154,15 @@ export default function AdminPage() {
 
     setOverview(payload);
     setClubId(payload.activeClubId);
-    setSelectedRoundId((current) => current || payload.club.playRounds[0]?.id || '');
+    setSelectedRoundId((current) => payload.club.playRounds.some((round: PlayRound) => round.id === current) ? current : payload.club.playRounds[0]?.id || '');
+    setTargetTeamId((current) => payload.club.teams.some((team: Team) => team.id === current) ? current : '');
   }
 
   useEffect(() => {
-    if (status === 'authenticated') {
+    if (status === 'authenticated' && viewReady) {
       loadOverview().catch((err) => setError(err instanceof Error ? err.message : 'Något gick fel'));
     }
-  }, [status]);
+  }, [status, viewReady]);
 
   const placedPlayerIds = useMemo(() => new Set(planner?.lineups.flatMap((lineup) => lineup.players.map((item) => item.playerId)) ?? []), [planner]);
   const selectedRoundNumber = useMemo(() => {
@@ -418,36 +471,67 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab !== 'planner' || !selectedRoundId || !clubId) return;
+    if (tab !== 'planner' || !overview || !selectedRoundId || !clubId) return;
 
-    loadPlanner(selectedRoundId);
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
+    let connectionTimer: number | undefined;
     let closed = false;
+    let refreshing = false;
 
+    const refresh = async () => {
+      if (closed || refreshing || document.hidden || lineupSaveInProgress.current) return;
+      refreshing = true;
+      try {
+        await loadPlanner(selectedRoundId);
+      } catch {
+        // Retry on the next tick after a temporary network failure.
+      } finally {
+        refreshing = false;
+      }
+    };
     const connect = () => {
+      if (closed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(`${protocol}//${window.location.host}/api/admin/ws?clubId=${encodeURIComponent(clubId)}`);
+      connectionTimer = window.setTimeout(() => socket?.close(), 10000);
+      socket.onopen = () => {
+        window.clearTimeout(connectionTimer);
+        void refresh();
+      };
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data as string) as { type?: string };
-          if (message.type === 'planner-updated' && !lineupSaveInProgress.current) void loadPlanner(selectedRoundId);
+          if (message.type === 'planner-updated') void refresh();
         } catch {
           // Ignore malformed socket messages and keep the connection alive.
         }
       };
       socket.onclose = () => {
-        if (!closed) reconnectTimer = window.setTimeout(connect, 3000);
+        window.clearTimeout(connectionTimer);
+        if (!closed) reconnectTimer = window.setTimeout(connect, 10000);
       };
     };
 
-    connect();
+    void refresh();
+    // Also catches missed notifications and writes handled by another server instance.
+    const refreshTimer = window.setInterval(() => void refresh(), 5000);
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    // The Vercel upgrade API is unavailable in the local Next.js development server.
+    if (process.env.NODE_ENV !== 'development') connect();
     return () => {
       closed = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      plannerRequest.current += 1;
+      window.clearInterval(refreshTimer);
+      window.clearTimeout(reconnectTimer);
+      window.clearTimeout(connectionTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
       socket?.close();
     };
-  }, [tab, selectedRoundId, clubId]);
+  }, [tab, selectedRoundId, clubId, Boolean(overview)]);
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number, source?: LineupSlot) {
     if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
