@@ -3,7 +3,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 export type Actor = { id?: string; name: string };
 export type Target = { kind: 'ABSENCE'; playDayId: string; playerId: string }
   | { kind: 'LINEUP'; playDayId: string; teamId: string; swapWith?: { playDayId: string; teamId: string } };
-type LineupSnapshot = { coachName: string | null; players: { playerId: string; sortOrder: number }[]; swapWith?: LineupSnapshot };
+type LineupSnapshot = { hideCoach?: boolean; hideSecondReserve?: boolean; secondMatchSlots?: number[]; coachName: string | null; players: { playerId: string; sortOrder: number }[]; swapWith?: LineupSnapshot };
 export type Snapshot = { unavailable: boolean } | LineupSnapshot;
 export class ChangeError extends Error {
   constructor(message: string, public status = 409) { super(message); }
@@ -26,7 +26,7 @@ async function snapshot(tx: Prisma.TransactionClient, clubId: string, target: Ta
   }
   if (!await tx.team.findFirst({ where: { id: target.teamId, clubId } })) throw new ChangeError('Laget finns inte i klubben.', 404);
   const lineup = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId: target.playDayId, teamId: target.teamId } }, include: { players: { orderBy: [{ sortOrder: 'asc' }, { playerId: 'asc' }] } } });
-  return { coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [],
+  return { ...(lineup?.hideCoach ? { hideCoach: true } : {}), ...(lineup?.hideSecondReserve ? { hideSecondReserve: true } : {}), ...(lineup?.secondMatchSlots?.length ? { secondMatchSlots: lineup.secondMatchSlots } : {}), coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [],
     ...(target.swapWith ? { swapWith: await snapshot(tx, clubId, { kind: 'LINEUP', ...target.swapWith }) as LineupSnapshot } : {}) };
 }
 export async function recordChange<T>(db: PrismaClient, clubId: string, actor: Actor, target: Target,
@@ -70,7 +70,7 @@ export async function undoChange(db: PrismaClient, clubId: string, id: string, a
           throw new ChangeError('En spelare som skulle återställas är nu kryssad som frånvarande. Kontrollera frånvaron först.');
         }
         const lineup = await tx.lineup.upsert({ where: { playDayId_teamId: { playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId } },
-          create: { clubId, playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId, coachName: saved.coachName }, update: { coachName: saved.coachName } });
+          create: { clubId, playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId, hideCoach: saved.hideCoach ?? false, hideSecondReserve: saved.hideSecondReserve ?? false, coachName: saved.coachName, secondMatchSlots: saved.secondMatchSlots ?? [] }, update: { hideCoach: saved.hideCoach ?? false, hideSecondReserve: saved.hideSecondReserve ?? false, coachName: saved.coachName, secondMatchSlots: saved.secondMatchSlots ?? [] } });
         await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });
         if (saved.players.length) await tx.lineupPlayer.createMany({ data: saved.players.map((p) => ({ ...p, lineupId: lineup.id })) });
       };

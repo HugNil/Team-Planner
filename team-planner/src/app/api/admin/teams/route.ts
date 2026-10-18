@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireClubAccess } from '@/app/lib/admin-auth';
+import { broadcastTeamPlannerUpdate } from '@/app/lib/team-planner-realtime';
 import { prisma } from '@/app/lib/prisma';
 
 export async function POST(req: Request) {
@@ -18,12 +19,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Lagnamn krävs' }, { status: 400 });
     }
 
+    if (body.leaderEnabled !== undefined && typeof body.leaderEnabled !== 'boolean') return NextResponse.json({ error: 'Ogiltig lagledarinställning' }, { status: 400 });
+
     const team = await prisma.team.create({
       data: {
         clubId,
         name,
         swebowlTeamId: body.swebowlTeamId ? String(body.swebowlTeamId).trim() : null,
         sortOrder: Number(body.sortOrder ?? 0),
+        leaderEnabled: body.leaderEnabled ?? true,
         leaderLabel: String(body.leaderLabel ?? 'Coach').trim() || 'Coach',
         reserveCount: Math.max(1, Math.min(2, Number(body.reserveCount ?? 1))),
         reserveLabel: String(body.reserveLabel ?? 'Reserv').trim() || 'Reserv',
@@ -54,12 +58,15 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'Saknar behörighet' }, { status: 403 });
     }
 
+    if (body.leaderEnabled !== undefined && typeof body.leaderEnabled !== 'boolean') return NextResponse.json({ error: 'Ogiltig lagledarinställning' }, { status: 400 });
+
     const updated = await prisma.team.update({
       where: { id: teamId },
       data: {
         name: String(body.name ?? team.name).trim(),
         swebowlTeamId: body.swebowlTeamId === '' ? null : String(body.swebowlTeamId ?? team.swebowlTeamId ?? '').trim() || null,
         sortOrder: Number(body.sortOrder ?? team.sortOrder),
+        leaderEnabled: body.leaderEnabled ?? team.leaderEnabled,
         leaderLabel: String(body.leaderLabel ?? team.leaderLabel).trim() || 'Coach',
         reserveCount: Math.max(1, Math.min(2, Number(body.reserveCount ?? team.reserveCount))),
         reserveLabel: String(body.reserveLabel ?? team.reserveLabel).trim() || 'Reserv',
@@ -67,6 +74,7 @@ export async function PATCH(req: Request) {
       },
     });
 
+    broadcastTeamPlannerUpdate(team.clubId);
     return NextResponse.json(updated);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

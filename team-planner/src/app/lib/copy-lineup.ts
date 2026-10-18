@@ -9,8 +9,10 @@ export async function copyPreviousLineup(db: PrismaClient, clubId: string, playD
   return recordChange(db, clubId, actor, { kind: 'LINEUP', playDayId, teamId }, 'Föregående uttagning kopierad', async (tx) => {
     const day = await tx.playDay.findFirst({ where: { id: playDayId, clubId }, include: { playRound: true, absences: true } });
     if (!day) throw new ChangeError('Speldagen hittades inte.', 404);
+    const team = await tx.team.findFirst({ where: { id: teamId, clubId } });
+    if (!team) throw new ChangeError('Laget hittades inte.', 404);
     const existing = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } }, include: { players: true } });
-    if (existing && (existing.players.length || existing.coachName)) throw new ChangeError('Laget har redan en uttagning eller coach. Kopiering görs bara till ett tomt lag.');
+    if (existing && (existing.players.length || (team.leaderEnabled && existing.coachName))) throw new ChangeError('Laget har redan en uttagning eller coach. Kopiering görs bara till ett tomt lag.');
     const source = await tx.lineup.findFirst({
       where: { clubId, teamId, playDay: { playRound: { startsOn: { lt: day.playRound.startsOn } } }, OR: [{ players: { some: {} } }, { coachName: { not: null } }] },
       orderBy: [{ playDay: { playRound: { startsOn: 'desc' } } }, { playDay: { date: 'desc' } }],
@@ -21,10 +23,14 @@ export async function copyPreviousLineup(db: PrismaClient, clubId: string, playD
     const skipped = filtered.skipped.map((p) => ({ name: `${p.player.firstName} ${p.player.lastName}`, reason: 'Frånvarande på den nya speldagen' }));
     const lineups = await tx.lineup.findMany({ where: { clubId, playDay: { playRoundId: day.playRoundId } }, include: { players: true } });
     const lineup = await tx.lineup.upsert({ where: { playDayId_teamId: { playDayId, teamId } },
-      create: { clubId, playDayId, teamId, coachName: source.coachName }, update: { coachName: source.coachName } });
+      create: { clubId, playDayId, teamId, coachName: team.leaderEnabled ? source.coachName : null }, update: { coachName: team.leaderEnabled ? source.coachName : null } });
     const target = { teamId, playDayId, players: [] as { playerId: string; sortOrder: number }[] };
     const proposed = [...lineups.filter((l) => l.id !== lineup.id), target];
     for (const player of filtered.included) {
+      if (existing?.hideSecondReserve && player.sortOrder === 9) {
+        skipped.push({ name: `${player.player.firstName} ${player.player.lastName}`, reason: 'Den andra reservplatsen är dold i denna omgång' });
+        continue;
+      }
       const conflict = getLineupConflict(proposed, player.playerId, teamId, player.sortOrder, playDayId);
       if (conflict) skipped.push({ name: `${player.player.firstName} ${player.player.lastName}`, reason: conflict });
       else target.players.push({ playerId: player.playerId, sortOrder: player.sortOrder });

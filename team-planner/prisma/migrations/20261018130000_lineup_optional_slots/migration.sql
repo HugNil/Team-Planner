@@ -1,0 +1,1 @@
+ALTER TABLE "Lineup" ADD COLUMN "hideCoach" BOOLEAN NOT NULL DEFAULT false, ADD COLUMN "hideSecondReserve" BOOLEAN NOT NULL DEFAULT false;
