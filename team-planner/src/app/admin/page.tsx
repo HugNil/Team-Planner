@@ -515,12 +515,13 @@ export default function AdminPage() {
 
     void refresh();
     // Also catches missed notifications and writes handled by another server instance.
-    const refreshTimer = window.setInterval(() => void refresh(), 5000);
+    const refreshTimer = window.setInterval(() => void refresh(), 3000);
     const onFocus = () => { void refresh(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onFocus);
-    // The Vercel upgrade API is unavailable in the local Next.js development server.
-    if (process.env.NODE_ENV !== 'development') connect();
+    // Planner updates use polling. The WebSocket endpoint is not reliable on
+    // the deployed function runtime and would otherwise create repeated failed
+    // invocations while reconnecting.
     return () => {
       closed = true;
       plannerRequest.current += 1;
