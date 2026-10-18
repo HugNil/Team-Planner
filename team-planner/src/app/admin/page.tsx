@@ -676,9 +676,11 @@ export default function AdminPage() {
   async function copyLineup(team: Team, lineup: Lineup | undefined, matchNumber: 1 | 2 = 1) {
     const lines = [`Omg ${selectedRoundNumber}`, ''];
     const slots = matchNumber === 2 ? lineup?.secondMatchSlots : null;
-    const match = planner?.teamPlans.find((plan) => plan.team.id === team.id)?.matches[matchNumber - 1];
+    const matches = planner?.teamPlans.find((plan) => plan.team.id === team.id)?.matches ?? [];
+    const match = matches[matchNumber - 1];
     const matchLabel = match ? `${match.homeTeam} - ${match.awayTeam}` : `Match ${matchNumber}`;
-    if (match || lineup?.secondMatchSlots?.length) lines.push(matchLabel);
+    if (lineup?.secondMatchSlots?.length) lines.push(matchLabel);
+    else lines.push(...matches.map((item) => `${item.homeTeam} - ${item.awayTeam}`));
     const playerBySlot = new Map((lineup?.players ?? []).map((item) => [slots ? slots.indexOf(item.sortOrder) : item.sortOrder, plannerName(item.player)]));
 
     for (let index = 0; index < 8; index += 2) {
@@ -728,7 +730,7 @@ export default function AdminPage() {
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-7xl px-3 py-4 sm:px-6 sm:py-6">
+      <div className="mx-auto max-w-[112rem] px-3 py-4 sm:px-6 sm:py-6 lg:px-10">
         <header className="mb-5 flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase text-emerald-700">Admin</p>
@@ -956,7 +958,7 @@ export default function AdminPage() {
 
             {copyReport.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold">Dessa spelare kopierades inte:</p><ul className="mt-2 list-inside list-disc">{copyReport.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
             {planner && planner.playRound.id === selectedRoundId && (
-              <div className="grid gap-5 xl:grid-cols-[20rem_1fr]">
+              <div className="grid gap-5 xl:grid-cols-[28rem_minmax(0,1fr)] xl:gap-x-8">
                 <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                     <h2 className="text-xl font-bold">Spelarpool</h2>
@@ -968,7 +970,7 @@ export default function AdminPage() {
                     {planner.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
                   </select>
                   <p className="mt-2 text-xs text-slate-600">Gul: redan uttagen. Röd: inte tillgänglig för valt lag. Högst två lag per spelare och en gemensam spelare per lagpar.</p>
-                  <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1 xl:max-h-none xl:overflow-visible xl:pr-0">
+                  <div className="mt-4 grid max-h-72 grid-cols-1 items-start gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:max-h-none xl:overflow-visible xl:pr-0">
                     {planner.players.map((player) => {
                       const placed = placedPlayerIds.has(player.id);
                       const selected = selectedPlannerPlayerId === player.id;
@@ -988,7 +990,7 @@ export default function AdminPage() {
                           draggable={!absentAllRound && !savingLineup}
                           onDragStart={(event) => event.dataTransfer.setData('playerId', player.id)}
                           onClick={() => !absentAllRound && setSelectedPlannerPlayerId(selected ? '' : player.id)}
-                          className={`cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold ${reason ? 'border-red-200 bg-red-50 text-red-800' : selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : placed ? 'border-amber-200 bg-amber-50 text-amber-900' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
+                          className={`min-w-0 cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold [overflow-wrap:anywhere] ${reason ? 'border-red-200 bg-red-50 text-red-800' : selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : placed ? 'border-amber-200 bg-amber-50 text-amber-900' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
                         >
                           {plannerName(player)}
                           {playerTeams.length > 0 && <span className="block text-xs">Uttagen: {playerTeams.map((team) => team.name).join(', ')}</span>}
@@ -1025,16 +1027,16 @@ export default function AdminPage() {
                           title="Kopiera spelare och coach till ett tomt lag. Frånvarande spelare hoppas över."
                           className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50">Kopiera föregående uttagning</button>
                         <div className="mt-3 space-y-1">
-                          {Array.from({ length: Math.max(...planner.teamPlans.map((item) => item.matches.length)) }, (_, index) => {
-                            const match = matches[index];
+                          {Array.from({ length: Math.max(...planner.teamPlans.map((item) => item.lineup?.secondMatchSlots?.length ? Math.min(1, item.matches.length) : item.matches.length)) }, (_, index) => {
+                            const match = lineup?.secondMatchSlots?.length && index > 0 ? undefined : matches[index];
                             return match ? (
-                              <p key={match.id} className="flex h-5 min-w-0 items-center gap-2 text-xs text-slate-500">
+                              <p key={match.id} className="flex h-6 min-w-0 items-center gap-2 text-sm text-slate-500">
                                 <time dateTime={match.date} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-semibold tabular-nums text-slate-700">
                                   {matchTimeFormatter.format(new Date(match.date))}
                                 </time>
                                 <span className="truncate" title={`${match.homeTeam} - ${match.awayTeam}`}>{match.homeTeam} - {match.awayTeam}</span>
                               </p>
-                            ) : <div key={`empty-${index}`} aria-hidden="true" className="h-5" />;
+                            ) : <div key={`empty-${index}`} aria-hidden="true" className="h-6" />;
                           })}
                         </div>
                         <div className={`mt-4 ${!team.leaderEnabled || lineup?.hideCoach ? 'invisible' : ''}`}
@@ -1054,10 +1056,6 @@ export default function AdminPage() {
                           className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         />
                         </div>
-                        <h3 title={matches[0] ? `${matches[0].homeTeam} - ${matches[0].awayTeam}` : undefined}
-                          className="mt-4 truncate font-bold">
-                          {matches[0] ? `${matches[0].homeTeam} - ${matches[0].awayTeam}` : 'Laguppställning'}
-                        </h3>
                         <div className="mt-4 space-y-3">
                           {[0, 2, 4, 6].map((pairStart) => (
                             <div key={pairStart} className="grid grid-cols-2 gap-2 rounded-md bg-emerald-50 p-2">
@@ -1136,8 +1134,15 @@ export default function AdminPage() {
                         {Boolean(lineup?.secondMatchSlots?.length) && (
                           <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
                             <div className="flex items-center justify-between gap-2">
-                              <h3 className="min-w-0 truncate font-bold" title={matches[1] ? `${matches[1].homeTeam} - ${matches[1].awayTeam}` : undefined}>
-                                {matches[1] ? `${matches[1].homeTeam} - ${matches[1].awayTeam}` : 'Match 2'}
+                              <h3 className="flex min-w-0 items-center gap-2 text-sm font-normal text-slate-500">
+                                {matches[1] ? <>
+                                  <time dateTime={matches[1].date} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-semibold tabular-nums text-slate-700">
+                                    {matchTimeFormatter.format(new Date(matches[1].date))}
+                                  </time>
+                                  <span className="truncate" title={`${matches[1].homeTeam} - ${matches[1].awayTeam}`}>
+                                    {matches[1].homeTeam} - {matches[1].awayTeam}
+                                  </span>
+                                </> : 'Match 2'}
                               </h3>
                               <button onClick={() => copyLineup(team, lineup ?? undefined, 2)} className="shrink-0 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold">Kopiera</button>
                             </div>
