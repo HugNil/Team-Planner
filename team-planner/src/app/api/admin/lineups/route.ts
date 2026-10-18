@@ -91,7 +91,7 @@ export async function GET(req: Request) {
         ? lineups.find((item: { teamId: string; playDayId: string }) => item.teamId === team.id && item.playDayId === playDay.id) ?? null
         : null;
       const matches =
-        playDay?.matches.filter((match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }) =>
+        playRound.days.flatMap((day: { matches: Array<{ id: string; date: Date; location: string | null; externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }> }) => day.matches).filter((match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }) =>
           matchBelongsToTeam(match, team),
         ) ?? [];
 
@@ -200,8 +200,14 @@ export async function PATCH(req: Request) {
       const lineup = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
         { kind: 'LINEUP', playDayId, teamId }, slots.length ? 'Uppställning för match 2 ändrad' : 'Uppställning för match 2 borttagen',
         async (tx) => {
+          if (slots.length) {
+            const matches = await tx.match.findMany({ where: { clubId, playDay: { playRoundId: playDay.playRoundId } } });
+            if (matches.filter((match) => matchBelongsToTeam(match, team)).length < 2) {
+              throw new ChangeError('Två uppställningar kräver minst två matcher för laget i omgången.');
+            }
+          }
           const current = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } } });
-          if (current?.hideSecondReserve && slots.length && slots[9] !== 9) throw new ChangeError('Den andra reservplatsen är dold.');
+          if ((current?.hideSecondReserve ?? true) && slots.length && slots[9] !== 9) throw new ChangeError('Den andra reservplatsen är dold.');
           return tx.lineup.upsert({
           where: { playDayId_teamId: { playDayId, teamId } },
           create: { clubId, playDayId, teamId, secondMatchSlots: slots },
@@ -305,7 +311,7 @@ export async function PATCH(req: Request) {
         where: { clubId, playDay: { playRoundId: playDay.playRoundId } },
         include: { players: true },
       });
-      if (sortOrder === 9 && roundLineups.some((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId && lineup.hideSecondReserve)) throw new ChangeError('Den andra reservplatsen är dold.');
+      if (sortOrder === 9 && (roundLineups.find((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId)?.hideSecondReserve ?? true)) throw new ChangeError('Den andra reservplatsen är dold.');
       const conflict = getLineupConflict(roundLineups, playerId, teamId, sortOrder, playDayId);
       if (conflict) return { conflict, lineup: null };
       const lineup = await tx.lineup.upsert({

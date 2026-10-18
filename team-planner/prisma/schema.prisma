@@ -194,7 +194,7 @@ model Lineup {
   teamId    String
   team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
   hideCoach Boolean @default(false)
-  hideSecondReserve Boolean @default(false)
+  hideSecondReserve Boolean @default(true)
   secondMatchSlots Int[] @default([])
   coachName String?
   players   LineupPlayer[]

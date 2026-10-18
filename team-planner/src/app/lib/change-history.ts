@@ -26,7 +26,7 @@ async function snapshot(tx: Prisma.TransactionClient, clubId: string, target: Ta
   }
   if (!await tx.team.findFirst({ where: { id: target.teamId, clubId } })) throw new ChangeError('Laget finns inte i klubben.', 404);
   const lineup = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId: target.playDayId, teamId: target.teamId } }, include: { players: { orderBy: [{ sortOrder: 'asc' }, { playerId: 'asc' }] } } });
-  return { ...(lineup?.hideCoach ? { hideCoach: true } : {}), ...(lineup?.hideSecondReserve ? { hideSecondReserve: true } : {}), ...(lineup?.secondMatchSlots?.length ? { secondMatchSlots: lineup.secondMatchSlots } : {}), coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [],
+  return { ...(lineup?.hideCoach ? { hideCoach: true } : {}), ...((lineup ? lineup.hideSecondReserve : true) ? { hideSecondReserve: true } : {}), ...(lineup?.secondMatchSlots?.length ? { secondMatchSlots: lineup.secondMatchSlots } : {}), coachName: lineup?.coachName ?? null, players: lineup?.players.map(({ playerId, sortOrder }) => ({ playerId, sortOrder })) ?? [],
     ...(target.swapWith ? { swapWith: await snapshot(tx, clubId, { kind: 'LINEUP', ...target.swapWith }) as LineupSnapshot } : {}) };
 }
 export async function recordChange<T>(db: PrismaClient, clubId: string, actor: Actor, target: Target,

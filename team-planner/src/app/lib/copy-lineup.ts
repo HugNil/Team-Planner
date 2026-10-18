@@ -27,7 +27,7 @@ export async function copyPreviousLineup(db: PrismaClient, clubId: string, playD
     const target = { teamId, playDayId, players: [] as { playerId: string; sortOrder: number }[] };
     const proposed = [...lineups.filter((l) => l.id !== lineup.id), target];
     for (const player of filtered.included) {
-      if (existing?.hideSecondReserve && player.sortOrder === 9) {
+      if ((existing?.hideSecondReserve ?? true) && player.sortOrder === 9) {
         skipped.push({ name: `${player.player.firstName} ${player.player.lastName}`, reason: 'Den andra reservplatsen är dold i denna omgång' });
         continue;
       }

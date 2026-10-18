@@ -37,6 +37,8 @@ type Lineup = { hideCoach?: boolean; hideSecondReserve?: boolean; secondMatchSlo
 type TeamPlan = { team: Team; playDay: PlayDay | null; matches: Match[]; lineup: Lineup | null };
 type PlannerData = { players: Player[]; teams: Team[]; playRound: PlayRound; days: PlayDay[]; lineups: Lineup[]; teamPlans: TeamPlan[] };
 
+const matchTimeFormatter = new Intl.DateTimeFormat('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
+
 const dayFormatter = new Intl.DateTimeFormat('sv-SE', { weekday: 'long', day: 'numeric', month: 'long' });
 
 function playerName(player: Player) {
@@ -674,7 +676,9 @@ export default function AdminPage() {
   async function copyLineup(team: Team, lineup: Lineup | undefined, matchNumber: 1 | 2 = 1) {
     const lines = [`Omg ${selectedRoundNumber}`, ''];
     const slots = matchNumber === 2 ? lineup?.secondMatchSlots : null;
-    if (lineup?.secondMatchSlots?.length) lines.push(`Match ${matchNumber}`);
+    const match = planner?.teamPlans.find((plan) => plan.team.id === team.id)?.matches[matchNumber - 1];
+    const matchLabel = match ? `${match.homeTeam} - ${match.awayTeam}` : `Match ${matchNumber}`;
+    if (match || lineup?.secondMatchSlots?.length) lines.push(matchLabel);
     const playerBySlot = new Map((lineup?.players ?? []).map((item) => [slots ? slots.indexOf(item.sortOrder) : item.sortOrder, plannerName(item.player)]));
 
     for (let index = 0; index < 8; index += 2) {
@@ -686,7 +690,7 @@ export default function AdminPage() {
       }
     }
 
-    for (let reserveIndex = 0; reserveIndex < (lineup?.hideSecondReserve ? 1 : team.reserveCount); reserveIndex += 1) {
+    for (let reserveIndex = 0; reserveIndex < ((lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount); reserveIndex += 1) {
       const reserve = playerBySlot.get(8 + reserveIndex);
       if (reserve) lines.push(`${reserveIndex === 0 ? team.reserveLabel : team.reserve2Label}: ${reserve}`);
     }
@@ -696,7 +700,7 @@ export default function AdminPage() {
     }
 
     await navigator.clipboard.writeText(lines.join('\n'));
-    setMessage(`${team.name}${lineup?.secondMatchSlots?.length ? `, match ${matchNumber}` : ''} kopierat.`);
+    setMessage(`${team.name}${lineup?.secondMatchSlots?.length ? `, ${matchLabel}` : ''} kopierat.`);
     setError('');
   }
 
@@ -1002,7 +1006,7 @@ export default function AdminPage() {
                     return (
                       <div
                         key={team.id}
-                        className="min-h-64 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+                        className="min-h-64 min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
                       >
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
@@ -1012,7 +1016,7 @@ export default function AdminPage() {
                             </p>
                           </div>
                           <button onClick={() => copyLineup(team, lineup ?? undefined)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold sm:w-auto">
-                            Kopiera lag
+                            Kopiera
                           </button>
                         </div>
 
@@ -1020,12 +1024,26 @@ export default function AdminPage() {
                           onClick={() => playDay && copyPrevious(team.id, playDay.id)}
                           title="Kopiera spelare och coach till ett tomt lag. Frånvarande spelare hoppas över."
                           className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50">Kopiera föregående uttagning</button>
-                        {team.leaderEnabled && !lineup?.hideCoach && <>
-                        <label className="mt-4 block text-sm font-semibold text-slate-900">{team.leaderLabel}</label>
+                        <div className="mt-3 space-y-1">
+                          {Array.from({ length: Math.max(...planner.teamPlans.map((item) => item.matches.length)) }, (_, index) => {
+                            const match = matches[index];
+                            return match ? (
+                              <p key={match.id} className="flex h-5 min-w-0 items-center gap-2 text-xs text-slate-500">
+                                <time dateTime={match.date} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-semibold tabular-nums text-slate-700">
+                                  {matchTimeFormatter.format(new Date(match.date))}
+                                </time>
+                                <span className="truncate" title={`${match.homeTeam} - ${match.awayTeam}`}>{match.homeTeam} - {match.awayTeam}</span>
+                              </p>
+                            ) : <div key={`empty-${index}`} aria-hidden="true" className="h-5" />;
+                          })}
+                        </div>
+                        <div className={`mt-4 ${!team.leaderEnabled || lineup?.hideCoach ? 'invisible' : ''}`}
+                          aria-hidden={!team.leaderEnabled || Boolean(lineup?.hideCoach)}>
+                        <label className="block text-sm font-semibold text-slate-900">{team.leaderLabel}</label>
                         <input
                           key={`${planner.playRound.id}-${team.id}-${playDay?.id}-${lineup?.coachName ?? ''}`}
                           defaultValue={lineup?.coachName ?? ''}
-                          disabled={!playDay}
+                          disabled={!playDay || !team.leaderEnabled || Boolean(lineup?.hideCoach)}
                           onBlur={(event) => {
                             const coachName = event.target.value.trim();
                             if (playDay && coachName !== (lineup?.coachName ?? '')) {
@@ -1035,17 +1053,11 @@ export default function AdminPage() {
                           placeholder={`Namn på ${team.leaderLabel.toLowerCase()}`}
                           className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         />
-                        </>}
-                        {matches.length > 0 && (
-                          <div className="mt-3 space-y-1">
-                            {matches.map((match) => (
-                              <p key={match.id} className="text-xs text-slate-500">
-                                {match.homeTeam} - {match.awayTeam}
-                              </p>
-                            ))}
-                          </div>
-                        )}
-                        {Boolean(lineup?.secondMatchSlots?.length) && <h3 className="mt-4 font-bold">Match 1</h3>}
+                        </div>
+                        <h3 title={matches[0] ? `${matches[0].homeTeam} - ${matches[0].awayTeam}` : undefined}
+                          className="mt-4 truncate font-bold">
+                          {matches[0] ? `${matches[0].homeTeam} - ${matches[0].awayTeam}` : 'Laguppställning'}
+                        </h3>
                         <div className="mt-4 space-y-3">
                           {[0, 2, 4, 6].map((pairStart) => (
                             <div key={pairStart} className="grid grid-cols-2 gap-2 rounded-md bg-emerald-50 p-2">
@@ -1093,7 +1105,7 @@ export default function AdminPage() {
                               })}
                             </div>
                           ))}
-                          {Array.from({ length: lineup?.hideSecondReserve ? 1 : team.reserveCount }, (_, reserveIndex) => {
+                          {Array.from({ length: (lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount }, (_, reserveIndex) => {
                             const slot = 8 + reserveIndex;
                             const reserveLabel = reserveIndex === 0 ? team.reserveLabel : team.reserve2Label;
                             const reservePlayer = playerBySlot.get(slot);
@@ -1120,7 +1132,26 @@ export default function AdminPage() {
                             );
                           })}
                         </div>
-                        <section aria-label={`Tillval för ${team.name}`} className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/70">
+                        <div>
+                        {Boolean(lineup?.secondMatchSlots?.length) && (
+                          <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <h3 className="min-w-0 truncate font-bold" title={matches[1] ? `${matches[1].homeTeam} - ${matches[1].awayTeam}` : undefined}>
+                                {matches[1] ? `${matches[1].homeTeam} - ${matches[1].awayTeam}` : 'Match 2'}
+                              </h3>
+                              <button onClick={() => copyLineup(team, lineup ?? undefined, 2)} className="shrink-0 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold">Kopiera</button>
+                            </div>
+                            <SecondMatchLineup key={lineup!.id} lineupId={lineup!.id}
+                              slots={lineup!.secondMatchSlots!}
+                              players={lineupPlayers.map((item) => ({ playerId: item.playerId, sortOrder: item.sortOrder, name: plannerName(item.player) }))}
+                              reserveLabels={[team.reserveLabel, team.reserve2Label].slice(0, (lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount)}
+                              disabled={savingLineup || !playDay}
+                              onChange={(slots) => { if (playDay) void saveSecondMatch(team.id, playDay.id, slots); }} />
+                          </div>
+                        )}
+                        </div>
+                        <div>
+                        {(team.leaderEnabled || team.reserveCount > 1 || matches.length >= 2 || Boolean(lineup?.secondMatchSlots?.length)) && <section aria-label={`Tillval för ${team.name}`} className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/70">
                           <div className="border-b border-slate-200/80 px-4 py-3">
                             <h3 className="text-sm font-semibold text-slate-800">Tillval</h3>
                             <p className="mt-0.5 text-xs text-slate-500">Gäller {team.name} i denna omgång</p>
@@ -1132,27 +1163,15 @@ export default function AdminPage() {
                               onChange={(checked) => { if (playDay) void saveVisibility(team.id, playDay.id, 'hideCoach', !checked); }} />}
                             {team.reserveCount > 1 && <PlannerToggle
                               label={`Visa ${team.reserve2Label}`} description="En extra reservplats i laget."
-                              checked={!lineup?.hideSecondReserve} disabled={!playDay || savingLineup}
+                              checked={lineup?.hideSecondReserve === false} disabled={!playDay || savingLineup}
                               onChange={(checked) => { if (playDay) void saveVisibility(team.id, playDay.id, 'hideSecondReserve', !checked); }} />}
-                            <PlannerToggle label="Två uppställningar" description="Samma spelare, egna placeringar för match 2."
-                              checked={Boolean(lineup?.secondMatchSlots?.length)} disabled={!playDay || savingLineup}
-                              onChange={(checked) => { if (playDay) void saveSecondMatch(team.id, playDay.id, checked ? Array.from({ length: 10 }, (_, i) => i) : []); }} />
+                            {(matches.length >= 2 || Boolean(lineup?.secondMatchSlots?.length)) && <PlannerToggle label="Två uppställningar"
+                              description={matches.length < 2 ? 'Kräver minst två matcher i omgången.' : 'Samma spelare, egna placeringar för match 2.'}
+                              checked={Boolean(lineup?.secondMatchSlots?.length)} disabled={!playDay || savingLineup || (matches.length < 2 && !lineup?.secondMatchSlots?.length)}
+                              onChange={(checked) => { if (playDay) void saveSecondMatch(team.id, playDay.id, checked ? Array.from({ length: 10 }, (_, i) => i) : []); }} />}
                           </div>
-                        </section>
-                        {Boolean(lineup?.secondMatchSlots?.length) && (
-                          <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
-                            <div className="flex items-center justify-between gap-2">
-                              <h3 className="font-bold">Match 2</h3>
-                              <button onClick={() => copyLineup(team, lineup ?? undefined, 2)} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold">Kopiera lag</button>
-                            </div>
-                            <SecondMatchLineup key={lineup!.id} lineupId={lineup!.id}
-                              slots={lineup!.secondMatchSlots!}
-                              players={lineupPlayers.map((item) => ({ playerId: item.playerId, sortOrder: item.sortOrder, name: plannerName(item.player) }))}
-                              reserveLabels={[team.reserveLabel, team.reserve2Label].slice(0, lineup?.hideSecondReserve ? 1 : team.reserveCount)}
-                              disabled={savingLineup || !playDay}
-                              onChange={(slots) => { if (playDay) void saveSecondMatch(team.id, playDay.id, slots); }} />
-                          </div>
-                        )}
+                        </section>}
+                        </div>
                       </div>
                     );
                   })}
