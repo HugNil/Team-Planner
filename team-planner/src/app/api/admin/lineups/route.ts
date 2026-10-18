@@ -1,3 +1,4 @@
+import { preserveSecondMatch } from '@/app/lib/second-match';
 import type { Prisma } from '@prisma/client';
 import { NextResponse } from 'next/server';
 import { requireClubAccess } from '@/app/lib/admin-auth';
@@ -90,7 +91,7 @@ export async function GET(req: Request) {
         ? lineups.find((item: { teamId: string; playDayId: string }) => item.teamId === team.id && item.playDayId === playDay.id) ?? null
         : null;
       const matches =
-        playDay?.matches.filter((match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }) =>
+        playRound.days.flatMap((day: { matches: Array<{ id: string; date: Date; location: string | null; externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }> }) => day.matches).filter((match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }) =>
           matchBelongsToTeam(match, team),
         ) ?? [];
 
@@ -157,6 +158,65 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: 'Fel klubb, dag, lag eller spelare' }, { status: 400 });
     }
 
+    if (!team.leaderEnabled && (action === 'coach' || (action === 'visibility' && body.field === 'hideCoach'))) {
+      return NextResponse.json({ error: 'Coach/lagledare är avstängd för laget.' }, { status: 409 });
+    }
+
+    if (action === 'visibility') {
+      if (!['hideCoach', 'hideSecondReserve'].includes(body.field) || typeof body.hidden !== 'boolean') {
+        return NextResponse.json({ error: 'Ogiltigt tillval' }, { status: 400 });
+      }
+      const field = body.field as 'hideCoach' | 'hideSecondReserve';
+      const lineup = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+        { kind: 'LINEUP', playDayId, teamId }, 'Synliga platser ändrade', async (tx) => {
+          const current = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } }, include: { players: true } });
+          let slots = current?.secondMatchSlots ?? [];
+          if (field === 'hideSecondReserve' && body.hidden) {
+            if (current?.players.some((player) => player.sortOrder === 9 || (slots.length > 0 && player.sortOrder === slots[9]))) {
+              throw new ChangeError('Flytta eller ta bort spelaren på den andra reservplatsen i båda uppställningarna först.');
+            }
+            if (slots.length) {
+              slots = [...slots];
+              const source = slots.indexOf(9);
+              [slots[source], slots[9]] = [slots[9], slots[source]];
+            }
+          }
+          return tx.lineup.upsert({
+            where: { playDayId_teamId: { playDayId, teamId } },
+            create: { clubId, playDayId, teamId, [field]: body.hidden },
+            update: { [field]: body.hidden, secondMatchSlots: slots }, include: lineupInclude,
+          });
+        });
+      broadcastTeamPlannerUpdate(clubId);
+      return NextResponse.json({ ok: true, lineup });
+    }
+
+    if (action === 'second-match') {
+      const slots = body.slots;
+      if (!Array.isArray(slots) || (slots.length !== 0 &&
+        (slots.length !== 10 || new Set(slots).size !== 10 || slots.some((slot) => !Number.isInteger(slot) || slot < 0 || slot > 9)))) {
+        return NextResponse.json({ error: 'Ogiltig uppställning' }, { status: 400 });
+      }
+      const lineup = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
+        { kind: 'LINEUP', playDayId, teamId }, slots.length ? 'Uppställning för match 2 ändrad' : 'Uppställning för match 2 borttagen',
+        async (tx) => {
+          if (slots.length) {
+            const matches = await tx.match.findMany({ where: { clubId, playDay: { playRoundId: playDay.playRoundId } } });
+            if (matches.filter((match) => matchBelongsToTeam(match, team)).length < 2) {
+              throw new ChangeError('Två uppställningar kräver minst två matcher för laget i omgången.');
+            }
+          }
+          const current = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } } });
+          if ((current?.hideSecondReserve ?? true) && slots.length && slots[9] !== 9) throw new ChangeError('Den andra reservplatsen är dold.');
+          return tx.lineup.upsert({
+          where: { playDayId_teamId: { playDayId, teamId } },
+          create: { clubId, playDayId, teamId, secondMatchSlots: slots },
+          update: { secondMatchSlots: slots }, include: lineupInclude,
+        }); });
+      broadcastTeamPlannerUpdate(clubId);
+      return NextResponse.json({ ok: true, lineup });
+    }
+
     if (action === 'coach') {
       const lineup = await recordChange(prisma, clubId, { id: access.user.id, name: access.user.email },
         { kind: 'LINEUP', playDayId, teamId }, coachName ? 'Coach ändrad' : 'Coach borttagen', async (tx) => {
@@ -200,12 +260,17 @@ export async function PATCH(req: Request) {
             (lineup.teamId === source.teamId && lineup.playDayId === source.playDayId));
           for (const lineup of affected) {
             const original = roundLineups.find((item) => item.id === lineup.id)!;
+            if (original.hideSecondReserve && lineup.players.some((player) => player.sortOrder === 9)) throw new ChangeError('Den andra reservplatsen är dold.');
             const arriving = lineup.players.filter((player) => !original.players.some((item) => item.playerId === player.playerId));
             if (arriving.length && await tx.dayAbsence.count({ where: { playDayId: lineup.playDayId, playerId: { in: arriving.map((player) => player.playerId) } } })) {
               throw new ChangeError('Spelaren är kryssad som frånvarande den dagen');
             }
           }
           for (const lineup of affected) {
+            const original = roundLineups.find((item) => item.id === lineup.id)!;
+            await tx.lineup.update({ where: { id: lineup.id }, data: {
+              secondMatchSlots: preserveSecondMatch(original.secondMatchSlots, original.players, lineup.players),
+            } });
             await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });
             await tx.lineupPlayer.createMany({ data: lineup.players.map(({ playerId, sortOrder }) => ({ lineupId: lineup.id, playerId, sortOrder })) });
           }
@@ -246,6 +311,7 @@ export async function PATCH(req: Request) {
         where: { clubId, playDay: { playRoundId: playDay.playRoundId } },
         include: { players: true },
       });
+      if (sortOrder === 9 && (roundLineups.find((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId)?.hideSecondReserve ?? true)) throw new ChangeError('Den andra reservplatsen är dold.');
       const conflict = getLineupConflict(roundLineups, playerId, teamId, sortOrder, playDayId);
       if (conflict) return { conflict, lineup: null };
       const lineup = await tx.lineup.upsert({
@@ -257,6 +323,13 @@ export async function PATCH(req: Request) {
         where: { lineupId: lineup.id, OR: [{ playerId }, { sortOrder }] },
       });
       await tx.lineupPlayer.create({ data: { lineupId: lineup.id, playerId, sortOrder } });
+      const previous = roundLineups.find((item) => item.id === lineup.id);
+      if (previous?.secondMatchSlots.length) {
+        const players = await tx.lineupPlayer.findMany({ where: { lineupId: lineup.id } });
+        await tx.lineup.update({ where: { id: lineup.id }, data: {
+          secondMatchSlots: preserveSecondMatch(previous.secondMatchSlots, previous.players, players),
+        } });
+      }
       return { conflict: null, lineup: await tx.lineup.findUnique({
         where: { id: lineup.id }, include: lineupInclude,
       }) };

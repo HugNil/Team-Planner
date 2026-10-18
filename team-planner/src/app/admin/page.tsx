@@ -1,5 +1,8 @@
 'use client';
 
+import PlannerToggle from './components/planner-toggle';
+import SecondMatchLineup from './components/second-match-lineup';
+
 import { SyncChanges } from './components/sync-changes';
 import type { SyncChange } from '@/app/lib/sync-summary';
 import { swapLineupPlayers, type LineupSlot } from '@/app/lib/lineup-swap';
@@ -11,7 +14,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 type HistoryEntry = { id: string; actorName: string; kind: string; summary: string; createdAt: string; undoneAt: string | null; undoneBy: string | null; currentStatus: string | null; before: Record<string, unknown>; after: Record<string, unknown> };
 type HistoryFilter = 'ALL' | 'ABSENCE' | 'LINEUP' | 'SYNC' | 'UNDONE';
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
-type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number; leaderLabel: string; reserveCount: number; reserveLabel: string; reserve2Label: string };
+type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number; leaderEnabled: boolean; leaderLabel: string; reserveCount: number; reserveLabel: string; reserve2Label: string };
 type Absence = { id: string; playerId: string; player: Player };
 type Match = { id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
 type PlayDay = { id: string; date: string; dateKey: string; matches: Match[]; absences: Absence[] };
@@ -30,9 +33,11 @@ type Overview = {
   };
 };
 type LineupPlayer = { id: string; playerId: string; sortOrder: number; player: Player };
-type Lineup = { id: string; playDayId: string; teamId: string; team: Team; coachName: string | null; players: LineupPlayer[] };
+type Lineup = { hideCoach?: boolean; hideSecondReserve?: boolean; secondMatchSlots?: number[]; id: string; playDayId: string; teamId: string; team: Team; coachName: string | null; players: LineupPlayer[] };
 type TeamPlan = { team: Team; playDay: PlayDay | null; matches: Match[]; lineup: Lineup | null };
 type PlannerData = { players: Player[]; teams: Team[]; playRound: PlayRound; days: PlayDay[]; lineups: Lineup[]; teamPlans: TeamPlan[] };
+
+const matchTimeFormatter = new Intl.DateTimeFormat('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
 
 const dayFormatter = new Intl.DateTimeFormat('sv-SE', { weekday: 'long', day: 'numeric', month: 'long' });
 
@@ -63,9 +68,9 @@ export default function AdminPage() {
   const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
   const [playerEditForm, setPlayerEditForm] = useState({ firstName: '', lastName: '', nickname: '' });
-  const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
+  const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '', leaderEnabled: true, leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
   const [editingTeamId, setEditingTeamId] = useState('');
-  const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
+  const [teamEditForm, setTeamEditForm] = useState({ name: '', swebowlTeamId: '', leaderEnabled: true, leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
   const [selectedRoundId, setSelectedRoundId] = useState('');
   const plannerRequest = useRef(0);
   const lineupSaveInProgress = useRef(false);
@@ -75,6 +80,57 @@ export default function AdminPage() {
   const [savingLineup, setSavingLineup] = useState(false);
   const [selectedPlannerPlayerId, setSelectedPlannerPlayerId] = useState('');
   const origin = typeof window === 'undefined' ? '' : window.location.origin;
+  const [viewReady, setViewReady] = useState(false);
+  const restoreScroll = useRef<number | null>(null);
+  const viewStorageKey = 'team-planner:admin-view';
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(viewStorageKey) ?? 'null');
+      if (saved && typeof saved === 'object') {
+        if (['players', 'absence', 'planner', 'history'].includes(saved.tab)) setTab(saved.tab);
+        if (typeof saved.clubId === 'string') setClubId(saved.clubId);
+        if (typeof saved.roundId === 'string') setSelectedRoundId(saved.roundId);
+        if (typeof saved.targetTeamId === 'string') setTargetTeamId(saved.targetTeamId);
+        if (['ALL', 'ABSENCE', 'LINEUP', 'SYNC', 'UNDONE'].includes(saved.historyFilter)) setHistoryFilter(saved.historyFilter);
+        if (Number.isFinite(saved.scrollY) && saved.scrollY >= 0) restoreScroll.current = saved.scrollY;
+      }
+    } catch { /* Storage can be disabled or contain an old value. */ }
+    setViewReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!viewReady || !overview || overview.activeClubId !== clubId) return;
+    const save = () => {
+      try {
+        sessionStorage.setItem(viewStorageKey, JSON.stringify({
+          tab, clubId, roundId: selectedRoundId, targetTeamId, historyFilter,
+          scrollY: restoreScroll.current ?? window.scrollY,
+        }));
+      } catch { /* Navigation still works without browser storage. */ }
+    };
+    save();
+    window.addEventListener('pagehide', save);
+    window.addEventListener('scroll', save, { passive: true });
+    return () => {
+      window.removeEventListener('pagehide', save);
+      window.removeEventListener('scroll', save);
+    };
+  }, [viewReady, overview, clubId, tab, selectedRoundId, targetTeamId, historyFilter]);
+
+  useEffect(() => {
+    if (!overview || restoreScroll.current === null) return;
+    if (tab === 'planner' && selectedRoundId && planner?.playRound.id !== selectedRoundId) return;
+    if (tab === 'history' && historyBusy) return;
+    const frame = requestAnimationFrame(() => {
+      if (restoreScroll.current !== null) {
+        window.scrollTo({ top: restoreScroll.current, behavior: 'instant' });
+        restoreScroll.current = null;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [overview, planner, selectedRoundId, tab, historyBusy]);
+
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -83,11 +139,12 @@ export default function AdminPage() {
   }, [router, status]);
 
   async function loadOverview(nextClubId = clubId) {
-    const suffix = nextClubId ? `?clubId=${nextClubId}` : '';
+    const suffix = nextClubId ? `?clubId=${encodeURIComponent(nextClubId)}` : '';
     const response = await fetch(`/api/admin/overview${suffix}`);
     const payload = await response.json();
 
     if (!response.ok) {
+      if (nextClubId && (response.status === 403 || response.status === 404)) return loadOverview('');
       if (response.status === 401) {
         await signOut({ callbackUrl: '/login', redirect: true });
         return;
@@ -97,14 +154,15 @@ export default function AdminPage() {
 
     setOverview(payload);
     setClubId(payload.activeClubId);
-    setSelectedRoundId((current) => current || payload.club.playRounds[0]?.id || '');
+    setSelectedRoundId((current) => payload.club.playRounds.some((round: PlayRound) => round.id === current) ? current : payload.club.playRounds[0]?.id || '');
+    setTargetTeamId((current) => payload.club.teams.some((team: Team) => team.id === current) ? current : '');
   }
 
   useEffect(() => {
-    if (status === 'authenticated') {
+    if (status === 'authenticated' && viewReady) {
       loadOverview().catch((err) => setError(err instanceof Error ? err.message : 'Något gick fel'));
     }
-  }, [status]);
+  }, [status, viewReady]);
 
   const placedPlayerIds = useMemo(() => new Set(planner?.lineups.flatMap((lineup) => lineup.players.map((item) => item.playerId)) ?? []), [planner]);
   const selectedRoundNumber = useMemo(() => {
@@ -222,7 +280,7 @@ export default function AdminPage() {
       return;
     }
 
-    setTeamForm({ name: '', swebowlTeamId: '', leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
+    setTeamForm({ name: '', swebowlTeamId: '', leaderEnabled: true, leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
     setMessage('Lag tillagt.');
     await refreshAll();
   }
@@ -232,6 +290,7 @@ export default function AdminPage() {
     setTeamEditForm({
       name: team.name,
       swebowlTeamId: team.swebowlTeamId ?? '',
+      leaderEnabled: team.leaderEnabled,
       leaderLabel: team.leaderLabel,
       reserveCount: team.reserveCount,
       reserveLabel: team.reserveLabel,
@@ -412,36 +471,67 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (tab !== 'planner' || !selectedRoundId || !clubId) return;
+    if (tab !== 'planner' || !overview || !selectedRoundId || !clubId) return;
 
-    loadPlanner(selectedRoundId);
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
+    let connectionTimer: number | undefined;
     let closed = false;
+    let refreshing = false;
 
+    const refresh = async () => {
+      if (closed || refreshing || document.hidden || lineupSaveInProgress.current) return;
+      refreshing = true;
+      try {
+        await loadPlanner(selectedRoundId);
+      } catch {
+        // Retry on the next tick after a temporary network failure.
+      } finally {
+        refreshing = false;
+      }
+    };
     const connect = () => {
+      if (closed) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       socket = new WebSocket(`${protocol}//${window.location.host}/api/admin/ws?clubId=${encodeURIComponent(clubId)}`);
+      connectionTimer = window.setTimeout(() => socket?.close(), 10000);
+      socket.onopen = () => {
+        window.clearTimeout(connectionTimer);
+        void refresh();
+      };
       socket.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data as string) as { type?: string };
-          if (message.type === 'planner-updated' && !lineupSaveInProgress.current) void loadPlanner(selectedRoundId);
+          if (message.type === 'planner-updated') void refresh();
         } catch {
           // Ignore malformed socket messages and keep the connection alive.
         }
       };
       socket.onclose = () => {
-        if (!closed) reconnectTimer = window.setTimeout(connect, 3000);
+        window.clearTimeout(connectionTimer);
+        if (!closed) reconnectTimer = window.setTimeout(connect, 10000);
       };
     };
 
-    connect();
+    void refresh();
+    // Also catches missed notifications and writes handled by another server instance.
+    const refreshTimer = window.setInterval(() => void refresh(), 5000);
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    // The Vercel upgrade API is unavailable in the local Next.js development server.
+    if (process.env.NODE_ENV !== 'development') connect();
     return () => {
       closed = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      plannerRequest.current += 1;
+      window.clearInterval(refreshTimer);
+      window.clearTimeout(reconnectTimer);
+      window.clearTimeout(connectionTimer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
       socket?.close();
     };
-  }, [tab, selectedRoundId, clubId]);
+  }, [tab, selectedRoundId, clubId, Boolean(overview)]);
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number, source?: LineupSlot) {
     if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
@@ -622,12 +712,60 @@ export default function AdminPage() {
       const player = overview?.club.players.find((p) => p.id === item.playerId);
       return `${item.sortOrder >= 8 ? `Reserv ${item.sortOrder - 7}` : item.sortOrder + 1}: ${player ? playerName(player) : 'Borttagen spelare'}`;
     });
-    return `Coach: ${value.coachName || 'Ingen'}. ${names.join(', ') || 'Inga spelare'}`;
+    return `${value.hideCoach ? 'Coachplats dold' : `Coach: ${value.coachName || 'Ingen'}`}. ${names.join(', ') || 'Inga spelare'}`;
   }
 
-  async function copyLineup(team: Team, lineup: Lineup | undefined) {
+  async function saveVisibility(teamId: string, playDayId: string, field: 'hideCoach' | 'hideSecondReserve', hidden: boolean) {
+    if (lineupSaveInProgress.current) return;
+    lineupSaveInProgress.current = true;
+    setSavingLineup(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/lineups', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, teamId, playDayId, action: 'visibility', field, hidden }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte spara tillvalet');
+      applyLineupUpdate(payload.lineup);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte spara tillvalet');
+    } finally {
+      lineupSaveInProgress.current = false;
+      setSavingLineup(false);
+    }
+  }
+
+  async function saveSecondMatch(teamId: string, playDayId: string, slots: number[]) {
+    if (lineupSaveInProgress.current) return;
+    lineupSaveInProgress.current = true;
+    setSavingLineup(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/lineups', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, teamId, playDayId, action: 'second-match', slots }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte spara uppställningen');
+      applyLineupUpdate(payload.lineup);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte spara uppställningen');
+    } finally {
+      lineupSaveInProgress.current = false;
+      setSavingLineup(false);
+    }
+  }
+
+  async function copyLineup(team: Team, lineup: Lineup | undefined, matchNumber: 1 | 2 = 1) {
     const lines = [`Omg ${selectedRoundNumber}`, ''];
-    const playerBySlot = new Map((lineup?.players ?? []).map((item) => [item.sortOrder, plannerName(item.player)]));
+    const slots = matchNumber === 2 ? lineup?.secondMatchSlots : null;
+    const matches = planner?.teamPlans.find((plan) => plan.team.id === team.id)?.matches ?? [];
+    const match = matches[matchNumber - 1];
+    const matchLabel = match ? `${match.homeTeam} - ${match.awayTeam}` : `Match ${matchNumber}`;
+    if (lineup?.secondMatchSlots?.length) lines.push(matchLabel);
+    else lines.push(...matches.map((item) => `${item.homeTeam} - ${item.awayTeam}`));
+    const playerBySlot = new Map((lineup?.players ?? []).map((item) => [slots ? slots.indexOf(item.sortOrder) : item.sortOrder, plannerName(item.player)]));
 
     for (let index = 0; index < 8; index += 2) {
       const first = playerBySlot.get(index);
@@ -638,17 +776,17 @@ export default function AdminPage() {
       }
     }
 
-    for (let reserveIndex = 0; reserveIndex < team.reserveCount; reserveIndex += 1) {
+    for (let reserveIndex = 0; reserveIndex < ((lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount); reserveIndex += 1) {
       const reserve = playerBySlot.get(8 + reserveIndex);
       if (reserve) lines.push(`${reserveIndex === 0 ? team.reserveLabel : team.reserve2Label}: ${reserve}`);
     }
 
-    if (lineup?.coachName) {
+    if (team.leaderEnabled && lineup?.coachName && !lineup.hideCoach) {
       lines.push(`${team.leaderLabel}: ${lineup.coachName}`);
     }
 
     await navigator.clipboard.writeText(lines.join('\n'));
-    setMessage(`${team.name} kopierat.`);
+    setMessage(`${team.name}${lineup?.secondMatchSlots?.length ? `, ${matchLabel}` : ''} kopierat.`);
     setError('');
   }
 
@@ -676,7 +814,7 @@ export default function AdminPage() {
 
   return (
     <main className="min-h-screen bg-slate-50">
-      <div className="mx-auto max-w-7xl px-3 py-4 sm:px-6 sm:py-6">
+      <div className="mx-auto max-w-[112rem] px-3 py-4 sm:px-6 sm:py-6 lg:px-10">
         <header className="mb-5 flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:flex-row md:items-center md:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-semibold uppercase text-emerald-700">Admin</p>
@@ -773,7 +911,11 @@ export default function AdminPage() {
                       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                         <input value={teamEditForm.name} onChange={(e) => setTeamEditForm({ ...teamEditForm, name: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <input value={teamEditForm.swebowlTeamId} onChange={(e) => setTeamEditForm({ ...teamEditForm, swebowlTeamId: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
-                        <input value={teamEditForm.leaderLabel} onChange={(e) => setTeamEditForm({ ...teamEditForm, leaderLabel: e.target.value })} placeholder="Coach-etikett" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
+                        <div className="rounded-xl border border-slate-200 bg-white">
+                          <PlannerToggle label="Coach/lagledare" description="Tillgänglig i lagets omgångar."
+                            checked={teamEditForm.leaderEnabled} onChange={(checked) => setTeamEditForm({ ...teamEditForm, leaderEnabled: checked })} />
+                        </div>
+                        <input disabled={!teamEditForm.leaderEnabled} value={teamEditForm.leaderLabel} onChange={(e) => setTeamEditForm({ ...teamEditForm, leaderLabel: e.target.value })} placeholder="Coach-etikett" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <select value={teamEditForm.reserveCount} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserveCount: Number(e.target.value) })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2"><option value={1}>1 reserv</option><option value={2}>2 reserver</option></select>
                         <input value={teamEditForm.reserveLabel} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserveLabel: e.target.value })} placeholder="Första reserv" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <input value={teamEditForm.reserve2Label} onChange={(e) => setTeamEditForm({ ...teamEditForm, reserve2Label: e.target.value })} placeholder="Andra reserv" disabled={teamEditForm.reserveCount < 2} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2 disabled:bg-slate-100" />
@@ -785,6 +927,7 @@ export default function AdminPage() {
                         <div className="min-w-0">
                           <p className="font-semibold">{team.name}</p>
                           <p className="text-sm text-slate-500">Swebowl: {team.swebowlTeamId || '-'}</p>
+                          {!team.leaderEnabled && <p className="text-sm text-slate-500">Coach/lagledare avstängd</p>}
                         </div>
                         <div className="flex shrink-0 gap-3">
                           <button onClick={() => startEditTeam(team)} className="text-sm font-semibold text-slate-700">Ändra</button>
@@ -899,7 +1042,7 @@ export default function AdminPage() {
 
             {copyReport.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm"><p className="font-semibold">Dessa spelare kopierades inte:</p><ul className="mt-2 list-inside list-disc">{copyReport.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
             {planner && planner.playRound.id === selectedRoundId && (
-              <div className="grid gap-5 xl:grid-cols-[20rem_1fr]">
+              <div className="grid gap-5 xl:grid-cols-[28rem_minmax(0,1fr)] xl:gap-x-8">
                 <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                     <h2 className="text-xl font-bold">Spelarpool</h2>
@@ -911,7 +1054,7 @@ export default function AdminPage() {
                     {planner.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}
                   </select>
                   <p className="mt-2 text-xs text-slate-600">Gul: redan uttagen. Röd: inte tillgänglig för valt lag. Högst två lag per spelare och en gemensam spelare per lagpar.</p>
-                  <div className="mt-4 max-h-72 space-y-2 overflow-y-auto pr-1 xl:max-h-none xl:overflow-visible xl:pr-0">
+                  <div className="mt-4 grid max-h-72 grid-cols-1 items-start gap-2 overflow-y-auto pr-1 sm:grid-cols-2 xl:max-h-none xl:overflow-visible xl:pr-0">
                     {planner.players.map((player) => {
                       const placed = placedPlayerIds.has(player.id);
                       const selected = selectedPlannerPlayerId === player.id;
@@ -931,7 +1074,7 @@ export default function AdminPage() {
                           draggable={!absentAllRound && !savingLineup}
                           onDragStart={(event) => event.dataTransfer.setData('playerId', player.id)}
                           onClick={() => !absentAllRound && setSelectedPlannerPlayerId(selected ? '' : player.id)}
-                          className={`cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold ${reason ? 'border-red-200 bg-red-50 text-red-800' : selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : placed ? 'border-amber-200 bg-amber-50 text-amber-900' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
+                          className={`min-w-0 cursor-pointer rounded-md border px-3 py-2 text-sm font-semibold [overflow-wrap:anywhere] ${reason ? 'border-red-200 bg-red-50 text-red-800' : selected ? 'border-emerald-700 bg-emerald-50 text-emerald-950 ring-2 ring-emerald-100' : placed ? 'border-amber-200 bg-amber-50 text-amber-900' : unavailableDays.length > 0 ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200 bg-white text-slate-900'}`}
                         >
                           {plannerName(player)}
                           {playerTeams.length > 0 && <span className="block text-xs">Uttagen: {playerTeams.map((team) => team.name).join(', ')}</span>}
@@ -949,7 +1092,7 @@ export default function AdminPage() {
                     return (
                       <div
                         key={team.id}
-                        className="min-h-64 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+                        className="min-h-64 min-w-0 rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
                       >
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                           <div className="min-w-0">
@@ -959,19 +1102,34 @@ export default function AdminPage() {
                             </p>
                           </div>
                           <button onClick={() => copyLineup(team, lineup ?? undefined)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold sm:w-auto">
-                            Kopiera lag
+                            Kopiera
                           </button>
                         </div>
 
-                        <button disabled={!playDay || savingLineup || Boolean(lineup?.players.length || lineup?.coachName)}
+                        <button disabled={!playDay || savingLineup || Boolean(lineup?.players.length || (team.leaderEnabled && lineup?.coachName))}
                           onClick={() => playDay && copyPrevious(team.id, playDay.id)}
                           title="Kopiera spelare och coach till ett tomt lag. Frånvarande spelare hoppas över."
                           className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50">Kopiera föregående uttagning</button>
-                        <label className="mt-4 block text-sm font-semibold text-slate-900">{team.leaderLabel}</label>
+                        <div className="mt-3 space-y-1">
+                          {Array.from({ length: Math.max(...planner.teamPlans.map((item) => item.lineup?.secondMatchSlots?.length ? Math.min(1, item.matches.length) : item.matches.length)) }, (_, index) => {
+                            const match = lineup?.secondMatchSlots?.length && index > 0 ? undefined : matches[index];
+                            return match ? (
+                              <p key={match.id} className="flex h-6 min-w-0 items-center gap-2 text-sm text-slate-500">
+                                <time dateTime={match.date} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-semibold tabular-nums text-slate-700">
+                                  {matchTimeFormatter.format(new Date(match.date))}
+                                </time>
+                                <span className="truncate" title={`${match.homeTeam} - ${match.awayTeam}`}>{match.homeTeam} - {match.awayTeam}</span>
+                              </p>
+                            ) : <div key={`empty-${index}`} aria-hidden="true" className="h-6" />;
+                          })}
+                        </div>
+                        <div className={`mt-4 ${!team.leaderEnabled || lineup?.hideCoach ? 'invisible' : ''}`}
+                          aria-hidden={!team.leaderEnabled || Boolean(lineup?.hideCoach)}>
+                        <label className="block text-sm font-semibold text-slate-900">{team.leaderLabel}</label>
                         <input
                           key={`${planner.playRound.id}-${team.id}-${playDay?.id}-${lineup?.coachName ?? ''}`}
                           defaultValue={lineup?.coachName ?? ''}
-                          disabled={!playDay}
+                          disabled={!playDay || !team.leaderEnabled || Boolean(lineup?.hideCoach)}
                           onBlur={(event) => {
                             const coachName = event.target.value.trim();
                             if (playDay && coachName !== (lineup?.coachName ?? '')) {
@@ -981,15 +1139,7 @@ export default function AdminPage() {
                           placeholder={`Namn på ${team.leaderLabel.toLowerCase()}`}
                           className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         />
-                        {matches.length > 0 && (
-                          <div className="mt-3 space-y-1">
-                            {matches.map((match) => (
-                              <p key={match.id} className="text-xs text-slate-500">
-                                {match.homeTeam} - {match.awayTeam}
-                              </p>
-                            ))}
-                          </div>
-                        )}
+                        </div>
                         <div className="mt-4 space-y-3">
                           {[0, 2, 4, 6].map((pairStart) => (
                             <div key={pairStart} className="grid grid-cols-2 gap-2 rounded-md bg-emerald-50 p-2">
@@ -1037,7 +1187,7 @@ export default function AdminPage() {
                               })}
                             </div>
                           ))}
-                          {Array.from({ length: team.reserveCount }, (_, reserveIndex) => {
+                          {Array.from({ length: (lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount }, (_, reserveIndex) => {
                             const slot = 8 + reserveIndex;
                             const reserveLabel = reserveIndex === 0 ? team.reserveLabel : team.reserve2Label;
                             const reservePlayer = playerBySlot.get(slot);
@@ -1063,6 +1213,53 @@ export default function AdminPage() {
                               </div>
                             );
                           })}
+                        </div>
+                        <div>
+                        {Boolean(lineup?.secondMatchSlots?.length) && (
+                          <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+                            <div className="flex items-center justify-between gap-2">
+                              <h3 className="flex min-w-0 items-center gap-2 text-sm font-normal text-slate-500">
+                                {matches[1] ? <>
+                                  <time dateTime={matches[1].date} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-semibold tabular-nums text-slate-700">
+                                    {matchTimeFormatter.format(new Date(matches[1].date))}
+                                  </time>
+                                  <span className="truncate" title={`${matches[1].homeTeam} - ${matches[1].awayTeam}`}>
+                                    {matches[1].homeTeam} - {matches[1].awayTeam}
+                                  </span>
+                                </> : 'Match 2'}
+                              </h3>
+                              <button onClick={() => copyLineup(team, lineup ?? undefined, 2)} className="shrink-0 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold">Kopiera</button>
+                            </div>
+                            <SecondMatchLineup key={lineup!.id} lineupId={lineup!.id}
+                              slots={lineup!.secondMatchSlots!}
+                              players={lineupPlayers.map((item) => ({ playerId: item.playerId, sortOrder: item.sortOrder, name: plannerName(item.player) }))}
+                              reserveLabels={[team.reserveLabel, team.reserve2Label].slice(0, (lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount)}
+                              disabled={savingLineup || !playDay}
+                              onChange={(slots) => { if (playDay) void saveSecondMatch(team.id, playDay.id, slots); }} />
+                          </div>
+                        )}
+                        </div>
+                        <div>
+                        {(team.leaderEnabled || team.reserveCount > 1 || matches.length >= 2 || Boolean(lineup?.secondMatchSlots?.length)) && <section aria-label={`Tillval för ${team.name}`} className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/70">
+                          <div className="border-b border-slate-200/80 px-4 py-3">
+                            <h3 className="text-sm font-semibold text-slate-800">Tillval</h3>
+                            <p className="mt-0.5 text-xs text-slate-500">Gäller {team.name} i denna omgång</p>
+                          </div>
+                          <div className="space-y-1 bg-white p-1">
+                            {team.leaderEnabled && <PlannerToggle
+                              label={`Visa ${team.leaderLabel.toLowerCase()}`} description="Namnplats i laguppställningen."
+                              checked={!lineup?.hideCoach} disabled={!playDay || savingLineup}
+                              onChange={(checked) => { if (playDay) void saveVisibility(team.id, playDay.id, 'hideCoach', !checked); }} />}
+                            {team.reserveCount > 1 && <PlannerToggle
+                              label={`Visa ${team.reserve2Label}`} description="En extra reservplats i laget."
+                              checked={lineup?.hideSecondReserve === false} disabled={!playDay || savingLineup}
+                              onChange={(checked) => { if (playDay) void saveVisibility(team.id, playDay.id, 'hideSecondReserve', !checked); }} />}
+                            {(matches.length >= 2 || Boolean(lineup?.secondMatchSlots?.length)) && <PlannerToggle label="Två uppställningar"
+                              description={matches.length < 2 ? 'Kräver minst två matcher i omgången.' : 'Samma spelare, egna placeringar för match 2.'}
+                              checked={Boolean(lineup?.secondMatchSlots?.length)} disabled={!playDay || savingLineup || (matches.length < 2 && !lineup?.secondMatchSlots?.length)}
+                              onChange={(checked) => { if (playDay) void saveSecondMatch(team.id, playDay.id, checked ? Array.from({ length: 10 }, (_, i) => i) : []); }} />}
+                          </div>
+                        </section>}
                         </div>
                       </div>
                     );

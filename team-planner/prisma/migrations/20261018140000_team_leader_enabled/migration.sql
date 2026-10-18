@@ -1,0 +1,1 @@
+ALTER TABLE "Team" ADD COLUMN "leaderEnabled" BOOLEAN NOT NULL DEFAULT true;

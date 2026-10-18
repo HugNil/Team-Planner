@@ -12,7 +12,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:prod": "tsx prisma/seed-production.ts",
     "admin:create": "tsx scripts/create-admin.ts",
-    "db:reset": "npx prisma db push --force-reset && npm run db:seed"
+    "db:reset": "npx prisma db push --force-reset && npm run db:seed",
+    "predev": "prisma generate",
+    "prebuild": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.13.0",

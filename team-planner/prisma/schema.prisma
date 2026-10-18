@@ -173,6 +173,7 @@ model Team {
   name          String
   swebowlTeamId String?
   sortOrder     Int      @default(0)
+  leaderEnabled Boolean @default(true)
   leaderLabel   String   @default("Coach")
   reserveCount  Int      @default(1)
   reserveLabel  String   @default("Reserv")
@@ -192,6 +193,9 @@ model Lineup {
   playDay   PlayDay        @relation(fields: [playDayId], references: [id], onDelete: Cascade)
   teamId    String
   team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  hideCoach Boolean @default(false)
+  hideSecondReserve Boolean @default(true)
+  secondMatchSlots Int[] @default([])
   coachName String?
   players   LineupPlayer[]
   createdAt DateTime       @default(now())
