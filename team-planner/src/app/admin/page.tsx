@@ -759,13 +759,18 @@ export default function AdminPage() {
   }
 
   async function copyLineup(team: Team, lineup: Lineup | undefined, matchNumber: 1 | 2 = 1) {
-    const lines = [`Omg ${selectedRoundNumber}`, ''];
+    const lines = [`Omg ${selectedRoundNumber}`];
     const slots = matchNumber === 2 ? lineup?.secondMatchSlots : null;
     const matches = planner?.teamPlans.find((plan) => plan.team.id === team.id)?.matches ?? [];
     const match = matches[matchNumber - 1];
     const matchLabel = match ? `${match.homeTeam} - ${match.awayTeam}` : `Match ${matchNumber}`;
     if (lineup?.secondMatchSlots?.length) lines.push(matchLabel);
     else lines.push(...matches.map((item) => `${item.homeTeam} - ${item.awayTeam}`));
+    lines.push('');
+    if (team.leaderEnabled && lineup?.coachName && !lineup.hideCoach) {
+      lines.push(`${team.leaderLabel}: ${lineup.coachName}`, '');
+    }
+
     const playerBySlot = new Map((lineup?.players ?? []).map((item) => [slots ? slots.indexOf(item.sortOrder) : item.sortOrder, plannerName(item.player)]));
 
     for (let index = 0; index < 8; index += 2) {
@@ -780,10 +785,6 @@ export default function AdminPage() {
     for (let reserveIndex = 0; reserveIndex < ((lineup?.hideSecondReserve ?? true) ? 1 : team.reserveCount); reserveIndex += 1) {
       const reserve = playerBySlot.get(8 + reserveIndex);
       if (reserve) lines.push(`${reserveIndex === 0 ? team.reserveLabel : team.reserve2Label}: ${reserve}`);
-    }
-
-    if (team.leaderEnabled && lineup?.coachName && !lineup.hideCoach) {
-      lines.push(`${team.leaderLabel}: ${lineup.coachName}`);
     }
 
     await navigator.clipboard.writeText(lines.join('\n'));
