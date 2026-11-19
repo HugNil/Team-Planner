@@ -1,7 +1,8 @@
+import { getTeamAbsenceConflict } from './team-availability';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 export type Actor = { id?: string; name: string };
-export type Target = { kind: 'ABSENCE'; playDayId: string; playerId: string }
+export type Target = { kind: 'ABSENCE'; playDayId: string; playerId: string; matchId?: string }
   | { kind: 'LINEUP'; playDayId: string; teamId: string; swapWith?: { playDayId: string; teamId: string } };
 type LineupSnapshot = { hideCoach?: boolean; hideSecondReserve?: boolean; secondMatchSlots?: number[]; coachName: string | null; players: { playerId: string; sortOrder: number }[]; swapWith?: LineupSnapshot };
 export type Snapshot = { unavailable: boolean } | LineupSnapshot;
@@ -22,6 +23,10 @@ async function snapshot(tx: Prisma.TransactionClient, clubId: string, target: Ta
   if (!day) throw new ChangeError('Speldagen finns inte kvar i klubben.', 404);
   if (target.kind === 'ABSENCE') {
     if (!await tx.player.findFirst({ where: { id: target.playerId, clubId } })) throw new ChangeError('Spelaren finns inte i klubben.', 404);
+    if (target.matchId) {
+      if (!await tx.match.findFirst({ where: { id: target.matchId, playDayId: target.playDayId, clubId } })) throw new ChangeError('Matchen finns inte i speldagen.', 404);
+      return { unavailable: Boolean(await tx.absence.findUnique({ where: { matchId_playerId: { matchId: target.matchId, playerId: target.playerId } } })) };
+    }
     return { unavailable: Boolean(await tx.dayAbsence.findUnique({ where: { playDayId_playerId: { playDayId: target.playDayId, playerId: target.playerId } } })) };
   }
   if (!await tx.team.findFirst({ where: { id: target.teamId, clubId } })) throw new ChangeError('Laget finns inte i klubben.', 404);
@@ -33,19 +38,22 @@ export async function recordChange<T>(db: PrismaClient, clubId: string, actor: A
   summary: string, mutate: (tx: Prisma.TransactionClient) => Promise<T>) {
   return db.$transaction(async (tx) => {
     await lockClub(tx, clubId);
-    const before = await snapshot(tx, clubId, target);
-    const result = await mutate(tx);
-    const after = await snapshot(tx, clubId, target);
-    if (!sameSnapshot(before, after)) {
-      const day = await tx.playDay.findUnique({ where: { id: target.playDayId } });
-      const person = target.kind === 'ABSENCE' ? await tx.player.findUnique({ where: { id: target.playerId } }) : null;
-      const team = target.kind === 'LINEUP' ? await tx.team.findUnique({ where: { id: target.teamId } }) : null;
-      const label = person ? `${person.firstName} ${person.lastName}` : team?.name ?? '';
-      await tx.changeLog.create({ data: { clubId, actorId: actor.id, actorName: actor.name, kind: target.kind,
-        entityKey: JSON.stringify(target), summary: `${summary}: ${label}, ${day?.dateKey ?? ''}`, before, after } });
-    }
-    return result;
+    return recordChangeInTransaction(tx, clubId, actor, target, summary, mutate);
   }, { timeout: 15_000 });
+}
+export async function recordChangeInTransaction<T>(tx: Prisma.TransactionClient, clubId: string, actor: Actor, target: Target, summary: string, mutate: (tx: Prisma.TransactionClient) => Promise<T>) {
+  const before = await snapshot(tx, clubId, target);
+  const result = await mutate(tx);
+  const after = await snapshot(tx, clubId, target);
+  if (!sameSnapshot(before, after)) {
+    const day = await tx.playDay.findUnique({ where: { id: target.playDayId } });
+    const person = target.kind === 'ABSENCE' ? await tx.player.findUnique({ where: { id: target.playerId } }) : null;
+    const team = target.kind === 'LINEUP' ? await tx.team.findUnique({ where: { id: target.teamId } }) : null;
+    const label = person ? `${person.firstName} ${person.lastName}` : team?.name ?? '';
+    await tx.changeLog.create({ data: { clubId, actorId: actor.id, actorName: actor.name, kind: target.kind,
+      entityKey: JSON.stringify(target), summary: `${summary}: ${label}, ${day?.dateKey ?? ''}`, before, after } });
+  }
+  return result;
 }
 export async function undoChange(db: PrismaClient, clubId: string, id: string, actor: Actor) {
   return db.$transaction(async (tx) => {
@@ -57,9 +65,15 @@ export async function undoChange(db: PrismaClient, clubId: string, id: string, a
     if (!sameSnapshot(current, entry.after)) throw new ChangeError('Uppgifterna har ändrats igen. Ångra den senare ändringen först.');
     const before = entry.before as unknown as Snapshot;
     if (target.kind === 'ABSENCE' && 'unavailable' in before) {
-      const where = { playDayId_playerId: { playDayId: target.playDayId, playerId: target.playerId } };
-      if (before.unavailable) await tx.dayAbsence.upsert({ where, create: where.playDayId_playerId, update: {} });
-      else await tx.dayAbsence.deleteMany({ where: where.playDayId_playerId });
+      if (target.matchId) {
+        const where = { matchId: target.matchId, playerId: target.playerId };
+        if (before.unavailable) await tx.absence.upsert({ where: { matchId_playerId: where }, create: where, update: {} });
+        else await tx.absence.deleteMany({ where });
+      } else {
+        const where = { playDayId_playerId: { playDayId: target.playDayId, playerId: target.playerId } };
+        if (before.unavailable) await tx.dayAbsence.upsert({ where, create: where.playDayId_playerId, update: {} });
+        else await tx.dayAbsence.deleteMany({ where: where.playDayId_playerId });
+      }
     } else if (target.kind === 'LINEUP' && 'players' in before) {
       const restore = async (lineupTarget: { playDayId: string; teamId: string }, saved: LineupSnapshot, existing: Snapshot) => {
         const count = await tx.player.count({ where: { clubId, id: { in: saved.players.map((p) => p.playerId) } } });
@@ -69,6 +83,8 @@ export async function undoChange(db: PrismaClient, clubId: string, id: string, a
         if (restoredIds.length && await tx.dayAbsence.count({ where: { playDayId: lineupTarget.playDayId, playerId: { in: restoredIds } } })) {
           throw new ChangeError('En spelare som skulle återställas är nu kryssad som frånvarande. Kontrollera frånvaron först.');
         }
+        const absenceConflict = await getTeamAbsenceConflict(tx, clubId, lineupTarget.playDayId, lineupTarget.teamId, restoredIds);
+        if (absenceConflict) throw new ChangeError(absenceConflict);
         const lineup = await tx.lineup.upsert({ where: { playDayId_teamId: { playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId } },
           create: { clubId, playDayId: lineupTarget.playDayId, teamId: lineupTarget.teamId, hideCoach: saved.hideCoach ?? false, hideSecondReserve: saved.hideSecondReserve ?? false, coachName: saved.coachName, secondMatchSlots: saved.secondMatchSlots ?? [] }, update: { hideCoach: saved.hideCoach ?? false, hideSecondReserve: saved.hideSecondReserve ?? false, coachName: saved.coachName, secondMatchSlots: saved.secondMatchSlots ?? [] } });
         await tx.lineupPlayer.deleteMany({ where: { lineupId: lineup.id } });

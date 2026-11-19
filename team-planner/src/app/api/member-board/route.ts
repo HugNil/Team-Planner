@@ -1,5 +1,7 @@
+import { matchBelongsToTeam } from '@/app/lib/team-matching';
+import type { Prisma } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
-import { recordChange } from '@/app/lib/change-history';
+import { ChangeError, lockClub, recordChangeInTransaction } from '@/app/lib/change-history';
 import { prisma } from '@/app/lib/prisma';
 import { isAbsenceDeadlinePassed } from '@/app/lib/rounds';
 
@@ -38,7 +40,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
     }
 
-    const [players, rounds] = await Promise.all([
+    const [players, rounds, teams] = await Promise.all([
       prisma.player.findMany({
         where: { clubId: club.id },
         select: {
@@ -74,6 +76,9 @@ export async function GET(req: NextRequest) {
                 awayTeam: true,
                 date: true,
                 location: true,
+                externalId: true,
+                sourceTeamName: true,
+                absences: { include: { player: true } },
               },
               orderBy: { date: 'asc' },
             },
@@ -100,12 +105,16 @@ export async function GET(req: NextRequest) {
         },
         orderBy: { startsOn: 'asc' },
       }),
+      prisma.team.findMany({ where: { clubId: club.id }, orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] }),
     ]);
     const visibleRounds = [];
 
     for (const round of rounds) {
       if (round.days.length > 0) {
-        visibleRounds.push(round);
+        visibleRounds.push({ ...round, teamGroups: teams.map((team: { id: string; name: string; swebowlTeamId: string | null }) => {
+          const matches = round.days.flatMap((day: { id: string; matches: Array<{ externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string }> }) => day.matches.filter(match => matchBelongsToTeam(match, team)));
+          return { teamId: team.id, name: team.name, matches };
+        }).filter((group: { matches: unknown[] }) => group.matches.length > 0) });
       }
     }
 
@@ -120,7 +129,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: error instanceof ChangeError ? error.status : 500 });
   }
 }
 
@@ -128,66 +137,62 @@ export async function PATCH(req: NextRequest) {
   try {
     const body = await req.json();
     const club = await getClubFromCode(body.code);
-    const playDayId = typeof body.playDayId === 'string' ? body.playDayId : '';
     const playerId = typeof body.playerId === 'string' ? body.playerId : '';
-    const unavailable = Boolean(body.unavailable);
-
-    if (!club) {
-      return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
+    const teamId = typeof body.teamId === 'string' ? body.teamId : '';
+    const playRoundId = typeof body.playRoundId === 'string' ? body.playRoundId : '';
+    const playDayId = typeof body.playDayId === 'string' ? body.playDayId : '';
+    if (!club) return NextResponse.json({ error: 'Ogiltig klubbkod' }, { status: 401 });
+    if (!playerId || typeof body.unavailable !== 'boolean' || body.matchId !== undefined || (teamId ? (!playRoundId || Boolean(playDayId)) : [playRoundId, playDayId].filter(Boolean).length !== 1)) {
+      return NextResponse.json({ error: 'Välj spelare och en omgång eller ett lag i omgången.' }, { status: 400 });
     }
-
-    if (!playDayId || !playerId) {
-      return NextResponse.json({ error: 'playDayId och playerId krävs' }, { status: 400 });
-    }
-
-    const [playDay, player] = await Promise.all([
-      prisma.playDay.findFirst({ where: { id: playDayId, clubId: club.id }, include: { playRound: true } }),
-      prisma.player.findFirst({ where: { id: playerId, clubId: club.id } }),
-    ]);
-
-    if (!playDay || !player) {
-      return NextResponse.json({ error: 'Speldag eller spelare hittades inte' }, { status: 404 });
-    }
-
-    if (isAbsenceDeadlinePassed(playDay.playRound.startsOn)) {
-      return NextResponse.json({ error: 'Deadline har passerat. Kontakta UK direkt.' }, { status: 403 });
-    }
-
-    return await recordChange(prisma, club.id,
-      { name: `Medlemslänk (${player.firstName} ${player.lastName}, ej inloggad)` },
-      { kind: 'ABSENCE', playDayId, playerId }, unavailable ? 'Frånvaro markerad' : 'Frånvaro avmarkerad', async (tx) => {
-        if (unavailable) {
-          const absence = await tx.dayAbsence.upsert({
-            where: {
-              playDayId_playerId: {
-                playDayId,
-                playerId,
-              },
-            },
-            create: {
-              playDayId,
-              playerId,
-            },
-            update: {},
-            include: {
-              player: true,
-            },
-          });
-
-          return NextResponse.json({ absence });
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await lockClub(tx, club.id);
+      const player = await tx.player.findFirst({ where: { id: playerId, clubId: club.id } });
+      const days = await tx.playDay.findMany({
+        where: { clubId: club.id, ...(playRoundId ? { playRoundId } : { id: playDayId }) },
+        include: { playRound: true, matches: true },
+      });
+      if (!player || !days.length) throw new ChangeError('Spelare eller omgång hittades inte.', 404);
+      if (days.some(day => isAbsenceDeadlinePassed(day.playRound.startsOn))) throw new ChangeError('Deadline har passerat. Kontakta UK direkt.', 403);
+      const actor = { name: `Medlemslänk (${player.firstName} ${player.lastName}, ej inloggad)` };
+      const team = teamId ? await tx.team.findFirst({ where: { id: teamId, clubId: club.id } }) : null;
+      if (teamId && (!team || !days.some(day => day.matches.some(match => matchBelongsToTeam(match, team))))) {
+        throw new ChangeError('Laget har inga matcher i omgången.', 404);
+      }
+      for (const day of days) {
+        if (team) {
+          const matches = day.matches.filter(match => matchBelongsToTeam(match, team));
+          if (!matches.length) continue;
+          if (await tx.dayAbsence.findUnique({ where: { playDayId_playerId: { playDayId: day.id, playerId } } })) throw new ChangeError('Avmarkera hela omgången eller dagen först.');
+          for (const match of matches) {
+            await recordChangeInTransaction(tx, club.id, actor, { kind: 'ABSENCE', playDayId: day.id, playerId, matchId: match.id },
+              `Lagfrånvaro ${body.unavailable ? 'markerad' : 'avmarkerad'} (${team.name})`, async tx => {
+                const where = { matchId: match.id, playerId };
+                if (body.unavailable) await tx.absence.upsert({ where: { matchId_playerId: where }, create: where, update: {} });
+                else await tx.absence.deleteMany({ where });
+              });
+          }
+        } else {
+          await recordChangeInTransaction(tx, club.id, actor, { kind: 'ABSENCE', playDayId: day.id, playerId },
+            body.unavailable ? 'Frånvaro markerad' : 'Frånvaro avmarkerad', async tx => {
+              const where = { playDayId: day.id, playerId };
+              if (body.unavailable) await tx.dayAbsence.upsert({ where: { playDayId_playerId: where }, create: where, update: {} });
+              else await tx.dayAbsence.deleteMany({ where });
+            });
+          if (playRoundId && !body.unavailable) {
+            for (const match of day.matches) {
+              await recordChangeInTransaction(tx, club.id, actor, { kind: 'ABSENCE', playDayId: day.id, playerId, matchId: match.id },
+                'Lagfrånvaro avmarkerad för hela omgången', async tx => {
+                  await tx.absence.deleteMany({ where: { matchId: match.id, playerId } });
+                });
+            }
+          }
         }
-
-        await tx.dayAbsence.deleteMany({
-          where: {
-            playDayId,
-            playerId,
-          },
-        });
-
-        return NextResponse.json({ absence: null });
-    });
+      }
+    }, { timeout: 15_000 });
+    return NextResponse.json({ ok: true });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: error instanceof ChangeError ? error.status : 500 });
   }
 }

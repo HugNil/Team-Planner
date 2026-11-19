@@ -34,10 +34,11 @@ test('a swap is recorded and undone as one change across both lineups', async ()
   let entry: Entry | undefined;
   const tx = {
     $queryRaw: async () => [],
-    playDay: { findFirst: async () => ({ id: 'day' }), findUnique: async () => ({ dateKey: '2026-10-05' }) },
+    playDay: { findFirst: async () => ({ id: 'day', playRoundId: 'round', absences: [] }), findUnique: async () => ({ dateKey: '2026-10-05' }) },
     team: { findFirst: async () => ({ id: 'team' }), findUnique: async () => ({ name: 'Team' }) },
     player: { count: async ({ where }: { where: { id: { in: string[] } } }) => where.id.in.length },
     dayAbsence: { count: async () => 0 },
+    match: { findMany: async () => [] },
     lineup: {
       findUnique: async ({ where }: { where: { playDayId_teamId: { teamId: string } } }) => lineups.get(where.playDayId_teamId.teamId),
       upsert: async ({ where }: { where: { playDayId_teamId: { teamId: string } } }) => lineups.get(where.playDayId_teamId.teamId),
