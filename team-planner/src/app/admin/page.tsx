@@ -65,6 +65,7 @@ export default function AdminPage() {
   const [copyReport, setCopyReport] = useState<string[]>([]);
   const [message, setMessage] = useState('');
   const [savingAbsence, setSavingAbsence] = useState(false);
+  const [collapsedRounds, setCollapsedRounds] = useState<Record<string, boolean>>({});
   const [error, setError] = useState('');
   const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
@@ -964,9 +965,28 @@ export default function AdminPage() {
               <h2 className="text-xl font-bold">Frånvaro</h2>
               {canEditAbsence && <p className="mt-1 text-sm text-slate-600">Kryssa i spelare som är frånvarande. Som admin kan du ändra även efter deadline.</p>}
               <div className="mt-4 space-y-4">
-                {overview.club.playRounds.map((round, index) => (
-                  <div key={round.id} className="rounded-md border border-slate-200 p-3">
-                    <h3 className="font-bold">Omgång {round.swebowlRound ?? index + 1}</h3>
+                {overview.club.playRounds.map((round, index) => {
+                  const dateFormat = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit' });
+                  const lastMatchDate = Math.max(new Date(round.endsOn).getTime(), ...round.days.flatMap(day => day.matches.map(match => new Date(match.date).getTime())));
+                  const finished = dateFormat.format(new Date(lastMatchDate)) < dateFormat.format(new Date());
+                  const collapsed = collapsedRounds[round.id] ?? finished;
+                  return (
+                  <div key={round.id} className="overflow-hidden rounded-md border border-slate-200">
+                    <h3>
+                      <button type="button" aria-expanded={!collapsed} aria-controls={`admin-round-${round.id}`}
+                        onClick={() => setCollapsedRounds(current => ({ ...current, [round.id]: !collapsed }))}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-emerald-700">
+                        <span className="flex items-center gap-2 font-semibold">
+                          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"
+                            className={`h-5 w-5 shrink-0 text-slate-500 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}>
+                            <path d="m9 5 7 7-7 7" />
+                          </svg>
+                          Omgång {round.swebowlRound ?? index + 1}
+                        </span>
+                        {finished && <span className="text-sm text-slate-500">Avslutad omgång</span>}
+                      </button>
+                    </h3>
+                    <div id={`admin-round-${round.id}`} hidden={collapsed} className="px-3 pb-3">
                     {round.days.map((day) => (
                       <div key={day.id} className="mt-3 border-t border-slate-100 pt-3">
                         <p className="font-semibold">{dayFormatter.format(new Date(day.date))}</p>
@@ -1002,8 +1022,10 @@ export default function AdminPage() {
                             ))}
                       </div>
                     ))}
+                    </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           </div>
