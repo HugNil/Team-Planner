@@ -1,5 +1,6 @@
 'use client';
 
+import { getMatchAbsenceConflict } from '@/app/lib/team-availability';
 import PlannerToggle from './components/planner-toggle';
 import SecondMatchLineup from './components/second-match-lineup';
 
@@ -16,7 +17,7 @@ type HistoryFilter = 'ALL' | 'ABSENCE' | 'LINEUP' | 'SYNC' | 'UNDONE';
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
 type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number; leaderEnabled: boolean; leaderLabel: string; reserveCount: number; reserveLabel: string; reserve2Label: string };
 type Absence = { id: string; playerId: string; player: Player };
-type Match = { id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
+type Match = { absences?: Absence[]; id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
 type PlayDay = { id: string; date: string; dateKey: string; matches: Match[]; absences: Absence[] };
 type PlayRound = { id: string; startsOn: string; endsOn: string; swebowlRound: number | null; days: PlayDay[] };
 type ClubOption = { id: string; name: string; role: 'ADMIN' | 'UK' };
@@ -536,6 +537,9 @@ export default function AdminPage() {
 
   async function assignPlayer(playerId: string, teamId: string, playDayId: string, sortOrder: number, source?: LineupSlot) {
     if (!playerId || savingLineup || !planner || planner.playRound.id !== selectedRoundId) return;
+    const targetPlan = planner.teamPlans.find(plan => plan.team.id === teamId);
+    const absenceConflict = getMatchAbsenceConflict(targetPlan?.matches ?? [], [playerId]);
+    if (absenceConflict) { setError(absenceConflict); return; }
     const targetLineup = planner.lineups.find((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId);
     const swap = Boolean(source && targetLineup?.players.some((player) => player.sortOrder === sortOrder));
     const previousPlanner = planner;
@@ -985,11 +989,17 @@ export default function AdminPage() {
                           </div>
                         ) : (
                           <div className="mt-2 flex flex-wrap gap-2">
-                            {day.absences.length === 0 ? <span className="text-sm text-slate-500">Ingen frånvaro</span> : day.absences.map((absence) => (
+                            {day.absences.length === 0 ? <span className="text-sm text-slate-500">Ingen frånvaro för hela dagen</span> : day.absences.map((absence) => (
                               <span key={absence.id} className="rounded-md bg-slate-100 px-2 py-1 text-sm">{playerName(absence.player)}</span>
                             ))}
-                          </div>
+
+                            </div>
                         )}
+                          {day.matches.map(match => (match.absences?.length ?? 0) > 0 && (
+                              <p key={match.id} className="w-full text-sm text-amber-900">
+                                {match.homeTeam} - {match.awayTeam}: {match.absences!.map(a => `${a.player.firstName} ${a.player.lastName}`).join(', ')} (endast denna match)
+                              </p>
+                            ))}
                       </div>
                     ))}
                   </div>
@@ -1062,13 +1072,18 @@ export default function AdminPage() {
                       const selected = selectedPlannerPlayerId === player.id;
                       const playerTeams = planner.teams.filter((team) => planner.lineups.some((lineup) => lineup.teamId === team.id && lineup.players.some((item) => item.playerId === player.id)));
                       const targetPlan = planner.teamPlans.find((plan) => plan.team.id === targetTeamId);
+                      const unavailableTeams = planner.teamPlans.filter(plan => plan.matches.some(match =>
+                        match.absences?.some(a => a.playerId === player.id) || planner.days.some(day => day.matches.some(item => item.id === match.id) && day.absences.some(a => a.playerId === player.id))
+                      )).map(plan => plan.team.name);
                       const targetAbsent = targetPlan?.playDay?.absences.some((absence) => absence.playerId === player.id);
                       const conflict = targetTeamId ? getLineupConflict(planner.lineups, player.id, targetTeamId, undefined, targetPlan?.playDay?.id) : null;
                       const unavailableDays = planner.days
                         .filter((day) => day.absences.some((absence) => absence.playerId === player.id))
                         .map((day) => dayFormatter.format(new Date(day.date)));
-                      const absentAllRound = planner.days.length > 0 && unavailableDays.length === planner.days.length;
-                      const reason = absentAllRound ? 'Frånvarande hela omgången' : targetAbsent ? 'Frånvarande på lagets speldag' : conflict;
+                      const teamsWithMatches = planner.teamPlans.filter(plan => plan.matches.length > 0);
+                      const absentAllRound = (planner.days.length > 0 && unavailableDays.length === planner.days.length)
+                        || (teamsWithMatches.length > 0 && teamsWithMatches.every(plan => unavailableTeams.includes(plan.team.name)));
+                      const reason = absentAllRound ? 'Frånvarande hela omgången' : targetAbsent ? 'Frånvarande på lagets speldag' : getMatchAbsenceConflict(targetPlan?.matches ?? [], [player.id]) ?? conflict;
                       return (
                         <div
                           key={player.id}
@@ -1080,7 +1095,9 @@ export default function AdminPage() {
                         >
                           {plannerName(player)}
                           {playerTeams.length > 0 && <span className="block text-xs">Uttagen: {playerTeams.map((team) => team.name).join(', ')}</span>}
-                          {reason ? <span className="block text-xs">{reason}</span> : unavailableDays.length > 0 && <span className="block text-xs">Kan inte {unavailableDays.join(', ')}</span>}
+                          {absentAllRound ? <span className="block text-xs">Frånvarande hela omgången</span>
+                            : unavailableTeams.length > 0 && <span className="block text-xs font-semibold text-red-800" aria-label={`Kan inte spela för ${unavailableTeams.join(", ")}`}>{unavailableTeams.join(", ")}</span>}
+                          {conflict && <span className="block text-xs">{conflict}</span>}
                         </div>
                       );
                     })}

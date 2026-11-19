@@ -1,3 +1,4 @@
+import { getTeamAbsenceConflict } from './team-availability';
 import type { PrismaClient } from '@prisma/client';
 import { ChangeError, recordChange, type Actor } from './change-history';
 import { getLineupConflict } from './lineup-eligibility';
@@ -29,6 +30,11 @@ export async function copyPreviousLineup(db: PrismaClient, clubId: string, playD
     for (const player of filtered.included) {
       if ((existing?.hideSecondReserve ?? true) && player.sortOrder === 9) {
         skipped.push({ name: `${player.player.firstName} ${player.player.lastName}`, reason: 'Den andra reservplatsen är dold i denna omgång' });
+        continue;
+      }
+      const absenceConflict = await getTeamAbsenceConflict(tx, clubId, playDayId, teamId, [player.playerId]);
+      if (absenceConflict) {
+        skipped.push({ name: `${player.player.firstName} ${player.player.lastName}`, reason: absenceConflict });
         continue;
       }
       const conflict = getLineupConflict(proposed, player.playerId, teamId, player.sortOrder, playDayId);

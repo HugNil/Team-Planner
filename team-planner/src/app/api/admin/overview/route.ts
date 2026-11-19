@@ -42,7 +42,7 @@ export async function GET(req: Request) {
                 matches: { some: {} },
               },
               include: {
-                matches: { orderBy: { date: 'asc' } },
+                matches: { include: { absences: { include: { player: true } } }, orderBy: { date: 'asc' } },
                 absences: { include: { player: true } },
               },
               orderBy: { date: 'asc' },

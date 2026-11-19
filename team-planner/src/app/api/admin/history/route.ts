@@ -18,8 +18,8 @@ export async function GET(req: Request) {
   const visibleEntries = entries.slice(0, 50);
   const entriesWithStatus = await Promise.all(visibleEntries.map(async (entry: (typeof entries)[number]) => {
     if (entry.kind === 'ABSENCE') {
-      const target = JSON.parse(entry.entityKey) as { playDayId: string; playerId: string };
-      const absence = await prisma.dayAbsence.findUnique({
+      const target = JSON.parse(entry.entityKey) as { playDayId: string; playerId: string; matchId?: string };
+      const absence = target.matchId ? await prisma.absence.findUnique({ where: { matchId_playerId: { matchId: target.matchId, playerId: target.playerId } } }) : await prisma.dayAbsence.findUnique({
         where: { playDayId_playerId: { playDayId: target.playDayId, playerId: target.playerId } },
       });
       return { ...entry, currentStatus: absence ? 'Kryssad' : 'Inte kryssad' };

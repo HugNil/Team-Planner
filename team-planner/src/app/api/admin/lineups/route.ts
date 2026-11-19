@@ -1,3 +1,5 @@
+import { matchBelongsToTeam } from '@/app/lib/team-matching';
+import { getTeamAbsenceConflict } from '@/app/lib/team-availability';
 import { preserveSecondMatch } from '@/app/lib/second-match';
 import type { Prisma } from '@prisma/client';
 import { NextResponse } from 'next/server';
@@ -7,32 +9,6 @@ import { getLineupConflict } from '@/app/lib/lineup-eligibility';
 import { swapLineupPlayers, type LineupSlot } from '@/app/lib/lineup-swap';
 import { prisma } from '@/app/lib/prisma';
 import { broadcastTeamPlannerUpdate } from '@/app/lib/team-planner-realtime';
-
-function normalize(value: string | null | undefined) {
-  return (value ?? '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function matchBelongsToTeam(
-  match: { externalId: string | null; sourceTeamName: string | null; homeTeam: string; awayTeam: string },
-  team: { name: string; swebowlTeamId: string | null },
-) {
-  const teamId = team.swebowlTeamId ? normalize(team.swebowlTeamId.split(':')[0]) : '';
-  const teamName = normalize(team.name);
-  const externalId = normalize(match.externalId);
-  const sourceTeamName = normalize(match.sourceTeamName);
-  const homeTeam = normalize(match.homeTeam);
-  const awayTeam = normalize(match.awayTeam);
-
-  if (teamId) {
-    return externalId.includes(teamId) || sourceTeamName === teamId || sourceTeamName.includes(teamId);
-  }
-
-  return Boolean(teamName && (sourceTeamName.includes(teamName) || homeTeam.includes(teamName) || awayTeam.includes(teamName)));
-}
 
 const lineupInclude = {
   team: true,
@@ -62,7 +38,7 @@ export async function GET(req: Request) {
           days: {
             include: {
               absences: { include: { player: true } },
-              matches: { orderBy: { date: 'asc' } },
+              matches: { include: { absences: { include: { player: true } } }, orderBy: { date: 'asc' } },
             },
             orderBy: { date: 'asc' },
           },
@@ -206,7 +182,9 @@ export async function PATCH(req: Request) {
               throw new ChangeError('Två uppställningar kräver minst två matcher för laget i omgången.');
             }
           }
-          const current = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } } });
+          const current = await tx.lineup.findUnique({ where: { playDayId_teamId: { playDayId, teamId } }, include: { players: true } });
+          const absenceConflict = await getTeamAbsenceConflict(tx, clubId, playDayId, teamId, current?.players.map(player => player.playerId) ?? []);
+          if (absenceConflict) throw new ChangeError(absenceConflict);
           if ((current?.hideSecondReserve ?? true) && slots.length && slots[9] !== 9) throw new ChangeError('Den andra reservplatsen är dold.');
           return tx.lineup.upsert({
           where: { playDayId_teamId: { playDayId, teamId } },
@@ -261,10 +239,9 @@ export async function PATCH(req: Request) {
           for (const lineup of affected) {
             const original = roundLineups.find((item) => item.id === lineup.id)!;
             if (original.hideSecondReserve && lineup.players.some((player) => player.sortOrder === 9)) throw new ChangeError('Den andra reservplatsen är dold.');
-            const arriving = lineup.players.filter((player) => !original.players.some((item) => item.playerId === player.playerId));
-            if (arriving.length && await tx.dayAbsence.count({ where: { playDayId: lineup.playDayId, playerId: { in: arriving.map((player) => player.playerId) } } })) {
-              throw new ChangeError('Spelaren är kryssad som frånvarande den dagen');
-            }
+            // Validate both destinations, including reorders of an existing selection.
+            const absenceConflict = await getTeamAbsenceConflict(tx, clubId, lineup.playDayId, lineup.teamId, lineup.players.map(player => player.playerId));
+            if (absenceConflict) throw new ChangeError(absenceConflict);
           }
           for (const lineup of affected) {
             const original = roundLineups.find((item) => item.id === lineup.id)!;
@@ -312,6 +289,8 @@ export async function PATCH(req: Request) {
         include: { players: true },
       });
       if (sortOrder === 9 && (roundLineups.find((lineup) => lineup.teamId === teamId && lineup.playDayId === playDayId)?.hideSecondReserve ?? true)) throw new ChangeError('Den andra reservplatsen är dold.');
+      const absenceConflict = await getTeamAbsenceConflict(tx, clubId, playDayId, teamId, [playerId]);
+      if (absenceConflict) throw new ChangeError(absenceConflict);
       const conflict = getLineupConflict(roundLineups, playerId, teamId, sortOrder, playDayId);
       if (conflict) return { conflict, lineup: null };
       const lineup = await tx.lineup.upsert({
