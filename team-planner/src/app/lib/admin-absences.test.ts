@@ -70,3 +70,43 @@ test('rejects ambiguous checkbox values without writing', async () => {
   assert.equal((await handler(request('false'))).status, 400);
   assert.deepEqual(writes, []);
 });
+
+test('admin team absence covers double matches after deadline and leaves other teams untouched', async () => {
+  const marked = new Set<string>();
+  const logs: unknown[] = [];
+  const matches = [
+    { id: 'first', homeTeam: 'F1', awayTeam: 'Away', sourceTeamName: 'F1', externalId: null },
+    { id: 'second', homeTeam: 'F1', awayTeam: 'Away', sourceTeamName: 'F1', externalId: null },
+    { id: 'other', homeTeam: 'F2', awayTeam: 'Away', sourceTeamName: 'F2', externalId: null },
+  ];
+  const db = {
+    $queryRaw: async () => [],
+    team: { findFirst: async () => ({ name: 'F1', swebowlTeamId: null }) },
+    player: { findFirst: async () => ({ id: 'player' }), findUnique: async () => ({ firstName: 'Test', lastName: 'Player' }) },
+    playDay: {
+      findMany: async ({ where }: { where: unknown }) => {
+        assert.deepEqual(where, { clubId: 'club', playRoundId: 'round' });
+        return [{ id: 'day', matches, absences: [], date: new Date('2020-01-01') }];
+      },
+      findFirst: async () => ({ id: 'day' }), findUnique: async () => ({ dateKey: '2020-01-01' }),
+    },
+    match: { findFirst: async () => matches[0] },
+    absence: {
+      findUnique: async ({ where }: { where: { matchId_playerId: { matchId: string } } }) => marked.has(where.matchId_playerId.matchId) ? { id: 'absence' } : null,
+      upsert: async ({ create }: { create: { matchId: string } }) => { marked.add(create.matchId); },
+      deleteMany: async ({ where }: { where: { matchId: string } }) => { marked.delete(where.matchId); },
+    },
+    changeLog: { create: async (data: unknown) => { logs.push(data); } },
+  } as unknown as PrismaClient;
+  db.$transaction = (async (callback: (tx: PrismaClient) => Promise<unknown>) => callback(db)) as unknown as typeof db.$transaction;
+  const handler = createAdminAbsenceHandler(db, async () => ({ user: { id: 'admin', email: 'admin@test.invalid' } }));
+  const teamRequest = (unavailable: boolean) => new Request('http://localhost/api/admin/absences', { method: 'PATCH', body: JSON.stringify({ clubId: 'club', playRoundId: 'round', teamId: 'F1', playerId: 'player', unavailable }) });
+  assert.equal((await handler(teamRequest(true))).status, 200);
+  assert.deepEqual([...marked], ['first', 'second']);
+  assert.equal(logs.length, 2);
+  assert.equal((await handler(teamRequest(false))).status, 200);
+  assert.equal(marked.size, 0);
+  const unauthorized = createAdminAbsenceHandler(db, async () => null);
+  assert.equal((await unauthorized(teamRequest(true))).status, 403);
+  assert.equal(marked.size, 0);
+});
