@@ -1,6 +1,8 @@
 'use client';
 
 import { getMatchAbsenceConflict } from '@/app/lib/team-availability';
+import { matchBelongsToTeam } from '@/app/lib/team-matching';
+import MatchOverview from './components/match-overview';
 import PlannerToggle from './components/planner-toggle';
 import SecondMatchLineup from './components/second-match-lineup';
 
@@ -17,7 +19,7 @@ type HistoryFilter = 'ALL' | 'ABSENCE' | 'LINEUP' | 'SYNC' | 'UNDONE';
 type Player = { id: string; firstName: string; lastName: string; nickname: string | null; number: number | null };
 type Team = { id: string; name: string; swebowlTeamId: string | null; sortOrder: number; leaderEnabled: boolean; leaderLabel: string; reserveCount: number; reserveLabel: string; reserve2Label: string };
 type Absence = { id: string; playerId: string; player: Player };
-type Match = { absences?: Absence[]; id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
+type Match = { externalId: string | null; sourceTeamName: string | null; absences?: Absence[]; id: string; homeTeam: string; awayTeam: string; date: string; location: string | null };
 type PlayDay = { id: string; date: string; dateKey: string; matches: Match[]; absences: Absence[] };
 type PlayRound = { id: string; startsOn: string; endsOn: string; swebowlRound: number | null; days: PlayDay[] };
 type ClubOption = { id: string; name: string; role: 'ADMIN' | 'UK' };
@@ -55,7 +57,7 @@ export default function AdminPage() {
   const router = useRouter();
   const [overview, setOverview] = useState<Overview | null>(null);
   const [clubId, setClubId] = useState('');
-  const [tab, setTab] = useState<'players' | 'absence' | 'planner' | 'history'>('players');
+  const [tab, setTab] = useState<'matches' | 'players' | 'absence' | 'planner' | 'history'>('matches');
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -69,6 +71,7 @@ export default function AdminPage() {
   const [error, setError] = useState('');
   const [playerForm, setPlayerForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [editingPlayerId, setEditingPlayerId] = useState('');
+  const [playerSearch, setPlayerSearch] = useState('');
   const [playerEditForm, setPlayerEditForm] = useState({ firstName: '', lastName: '', nickname: '' });
   const [teamForm, setTeamForm] = useState({ name: '', swebowlTeamId: '', leaderEnabled: true, leaderLabel: 'Coach', reserveCount: 1, reserveLabel: 'Reserv', reserve2Label: '10:a' });
   const [editingTeamId, setEditingTeamId] = useState('');
@@ -90,7 +93,7 @@ export default function AdminPage() {
     try {
       const saved = JSON.parse(sessionStorage.getItem(viewStorageKey) ?? 'null');
       if (saved && typeof saved === 'object') {
-        if (['players', 'absence', 'planner', 'history'].includes(saved.tab)) setTab(saved.tab);
+        if (['matches', 'players', 'absence', 'planner', 'history'].includes(saved.tab)) setTab(saved.tab);
         if (typeof saved.clubId === 'string') setClubId(saved.clubId);
         if (typeof saved.roundId === 'string') setSelectedRoundId(saved.roundId);
         if (typeof saved.targetTeamId === 'string') setTargetTeamId(saved.targetTeamId);
@@ -166,6 +169,41 @@ export default function AdminPage() {
     }
   }, [status, viewReady]);
 
+  useEffect(() => {
+    if (tab !== 'matches' || !clubId || status !== 'authenticated') return;
+    let active = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing || document.hidden) return;
+      refreshing = true;
+      try {
+        const response = await fetch(`/api/admin/overview?clubId=${encodeURIComponent(clubId)}`);
+        if (!response.ok) return;
+        const payload: Overview = await response.json();
+        if (active && payload.activeClubId === clubId) setOverview(current => current?.activeClubId === clubId ? payload : current);
+      } catch { /* Keep the visible overview during temporary connection failures. */ }
+      finally { refreshing = false; }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [tab, clubId, status]);
+
+  const filteredPlayers = useMemo(() => {
+    const terms = playerSearch.trim().toLocaleLowerCase('sv-SE').split(/\s+/).filter(Boolean);
+    return (overview?.club.players ?? []).filter(player => {
+      const name = `${player.firstName} ${player.lastName} ${player.nickname ?? ''}`.toLocaleLowerCase('sv-SE');
+      return terms.every(term => name.includes(term));
+    });
+  }, [overview?.club.players, playerSearch]);
+
   const placedPlayerIds = useMemo(() => new Set(planner?.lineups.flatMap((lineup) => lineup.players.map((item) => item.playerId)) ?? []), [planner]);
   const selectedRoundNumber = useMemo(() => {
     if (!overview || !selectedRoundId) return 1;
@@ -234,6 +272,25 @@ export default function AdminPage() {
     setEditingPlayerId('');
     setMessage('Spelare sparad.');
     await refreshAll();
+  }
+
+  async function toggleAdminTeamAbsence(playRoundId: string, teamId: string, playerId: string, unavailable: boolean) {
+    if (savingAbsence) return;
+    setSavingAbsence(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/admin/absences', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clubId, playRoundId, teamId, playerId, unavailable }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Kunde inte spara lagfrånvaron');
+      await refreshAll();
+      setMessage('Lagfrånvaro sparad.');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Kunde inte spara lagfrånvaron');
+    } finally { setSavingAbsence(false); }
   }
 
   async function toggleAdminAbsence(playDayId: string, playerId: string, unavailable: boolean) {
@@ -840,6 +897,9 @@ export default function AdminPage() {
                 <option key={club.id} value={club.id}>{club.name} ({club.role})</option>
               ))}
             </select>
+            <a href={overview.memberUrl} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-center text-sm font-semibold hover:bg-slate-50">
+              Medlemsvy
+            </a>
             <button onClick={() => signOut({ callbackUrl: '/' })} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">
               Logga ut
             </button>
@@ -854,10 +914,11 @@ export default function AdminPage() {
 
         <nav className="mb-5 flex flex-wrap gap-2">
           {[
-            ['players', 'Spelare & lag'],
-            ['absence', 'Frånvaro & QR'],
-            ['history', 'Historik'],
+            ['matches', 'Matcher & kryss'],
             ['planner', 'TeamPlanner'],
+            ['absence', 'Frånvaro'],
+            ['players', 'Spelare & lag'],
+            ['history', 'Historik'],
           ].map(([id, label]) => (
             <button
               key={id}
@@ -869,8 +930,10 @@ export default function AdminPage() {
           ))}
         </nav>
 
+        {tab === 'matches' && <MatchOverview key={clubId} rounds={overview.club.playRounds} teams={overview.club.teams} />}
+
         {tab === 'players' && (
-          <div className="grid gap-5 lg:grid-cols-2">
+          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Spelare</h2>
               <form onSubmit={handleAddPlayer} className="mt-4 grid gap-2 md:grid-cols-2">
@@ -879,9 +942,19 @@ export default function AdminPage() {
                 <input value={playerForm.nickname} onChange={(e) => setPlayerForm({ ...playerForm, nickname: e.target.value })} placeholder="Smeknamn" className="rounded-md border border-slate-300 px-3 py-2" />
                 <button className="rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
               </form>
-              <div className="mt-4 max-h-96 divide-y divide-slate-100 overflow-y-auto pr-2">
-                {overview.club.players.map((player) => (
-                  <div key={player.id} className="py-3">
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <label htmlFor="player-search" className="block text-sm font-semibold text-slate-700">Sök spelare</label>
+                <div className="mt-2 flex items-center gap-2">
+                  <input id="player-search" type="search" value={playerSearch} onChange={event => setPlayerSearch(event.target.value)}
+                    placeholder="Namn eller smeknamn" className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-100" />
+                  {playerSearch && <button type="button" onClick={() => setPlayerSearch('')} className="rounded-md border border-slate-300 px-3 py-2 text-sm">Rensa</button>}
+                </div>
+                <p className="mt-2 text-xs text-slate-500" role="status">{filteredPlayers.length} av {overview.club.players.length} spelare</p>
+              </div>
+              {!filteredPlayers.length && <p className="mt-4 text-sm text-slate-600">{playerSearch.trim() ? 'Inga spelare matchar sökningen.' : 'Inga spelare tillagda ännu.'}</p>}
+              <div className="mt-3 grid items-start gap-3 sm:grid-cols-2">
+                {filteredPlayers.map((player) => (
+                  <div key={player.id} className="min-w-0 rounded-md border border-slate-200 bg-slate-50/50 p-3">
                     {editingPlayerId === player.id ? (
                       <div className="grid gap-2 md:grid-cols-2">
                         <input value={playerEditForm.firstName} onChange={(e) => setPlayerEditForm({ ...playerEditForm, firstName: e.target.value })} className="rounded-md border border-slate-300 px-3 py-2" />
@@ -906,7 +979,7 @@ export default function AdminPage() {
 
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Lag</h2>
-              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+              <form onSubmit={handleAddTeam} className="mt-4 grid gap-2 sm:grid-cols-2">
                 <input value={teamForm.name} onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })} placeholder="A-lag, F-lag..." className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                 <input value={teamForm.swebowlTeamId} onChange={(e) => setTeamForm({ ...teamForm, swebowlTeamId: e.target.value })} placeholder="Swebowl ID" className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                 <button className="whitespace-nowrap rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Lägg till</button>
@@ -915,7 +988,7 @@ export default function AdminPage() {
                 {overview.club.teams.map((team) => (
                   <div key={team.id} className="py-3">
                     {editingTeamId === team.id ? (
-                      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="grid gap-2 sm:grid-cols-2">
                         <input value={teamEditForm.name} onChange={(e) => setTeamEditForm({ ...teamEditForm, name: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <input value={teamEditForm.swebowlTeamId} onChange={(e) => setTeamEditForm({ ...teamEditForm, swebowlTeamId: e.target.value })} className="min-w-0 w-full rounded-md border border-slate-300 px-3 py-2" />
                         <div className="rounded-xl border border-slate-200 bg-white">
@@ -945,14 +1018,8 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'absence' && (
-          <div className="grid gap-5">
-            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-              <h2 className="text-xl font-bold">Medlemslänk</h2>
+            <div className="mt-6 border-t border-slate-200 pt-5">
+              <h2 className="text-xl font-bold">Medlemslänk & QR</h2>
               <input readOnly value={memberUrl} className="mt-3 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
               <button onClick={() => navigator.clipboard.writeText(memberUrl)} className="mt-3 rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Kopiera länk</button>
               <div className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">
@@ -960,7 +1027,14 @@ export default function AdminPage() {
               </div>
               <button disabled={syncBusy} onClick={syncSwebowl} className="mt-4 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold">{syncBusy ? 'Synkar…' : 'Synka från Swebowl'}</button>
               {syncChanges && <details open className="mt-4"><summary className="cursor-pointer font-semibold">Resultat av synk</summary><SyncChanges changes={syncChanges} /></details>}
+            </div>
             </section>
+          </div>
+        )}
+
+        {tab === 'absence' && (
+          <div className="grid gap-5">
+
             <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
               <h2 className="text-xl font-bold">Frånvaro</h2>
               {canEditAbsence && <p className="mt-1 text-sm text-slate-600">Kryssa i spelare som är frånvarande. Som admin kan du ändra även efter deadline.</p>}
@@ -971,7 +1045,7 @@ export default function AdminPage() {
                   const finished = dateFormat.format(new Date(lastMatchDate)) < dateFormat.format(new Date());
                   const collapsed = collapsedRounds[round.id] ?? finished;
                   return (
-                  <div key={round.id} className="overflow-hidden rounded-md border border-slate-200">
+                  <div key={round.id} className="rounded-md border border-slate-200">
                     <h3>
                       <button type="button" aria-expanded={!collapsed} aria-controls={`admin-round-${round.id}`}
                         onClick={() => setCollapsedRounds(current => ({ ...current, [round.id]: !collapsed }))}
@@ -993,8 +1067,15 @@ export default function AdminPage() {
                         <p className="text-sm text-slate-600">{day.matches.length} matcher</p>
                         {canEditAbsence ? (
                           <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                            {overview.club.players.map((player) => (
-                              <label key={player.id} className="flex min-w-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm">
+                            {overview.club.players.map((player) => {
+                              const teamOptions = overview.club.teams.map(team => {
+                                const days = round.days.filter(day => day.matches.some(match => matchBelongsToTeam(match, team)));
+                                const matches = days.flatMap(day => day.matches.filter(match => matchBelongsToTeam(match, team)));
+                                const fullDay = days.some(day => day.absences.some(a => a.playerId === player.id));
+                                return { team, matches, fullDay, checked: fullDay || matches.some(match => match.absences?.some(a => a.playerId === player.id)) };
+                              }).filter(option => option.matches.length > 0);
+                              return <div key={player.id} className="flex min-w-0 items-center rounded-md border border-slate-200 text-sm">
+                              <label className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2">
                                 <input
                                   type="checkbox"
                                   checked={day.absences.some((absence) => absence.playerId === player.id)}
@@ -1005,7 +1086,27 @@ export default function AdminPage() {
                                 />
                                 <span className="min-w-0 break-words">{playerName(player)}</span>
                               </label>
-                            ))}
+                              <details className="group relative shrink-0 self-stretch"
+                                onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
+                                onKeyDown={event => { if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); } }}>
+                                <summary className="flex h-full cursor-pointer list-none items-center rounded-r-md px-3 py-2 text-slate-600 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-emerald-700 [&::-webkit-details-marker]:hidden">
+                                  <span className="sr-only">Lag i omgången för {playerName(player)}</span>
+                                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90"><path d="m9 5 7 7-7 7" /></svg>
+                                </summary>
+                                <div className="absolute right-0 top-full z-30 mt-1 w-64 max-w-[calc(100vw-4rem)] space-y-3 rounded-md border border-slate-200 bg-white p-3 shadow-lg">
+                                  <p className="text-xs font-semibold text-slate-600">Lag i omgången</p>
+                                  {teamOptions.map(option => <label key={option.team.id} className="flex items-center gap-2">
+                                    <input type="checkbox" checked={option.checked} disabled={savingAbsence || option.fullDay}
+                                      onChange={event => toggleAdminTeamAbsence(round.id, option.team.id, player.id, event.target.checked)}
+                                      aria-label={`${playerName(player)}, frånvarande för ${option.team.name} i omgång ${round.swebowlRound ?? index + 1}`}
+                                      className="h-4 w-4 shrink-0 accent-emerald-700" />
+                                    <span>{option.team.name}</span>
+                                  </label>)}
+                                  <p className="text-xs text-slate-500">Gäller alla lagets matcher i omgången.{teamOptions.some(option => option.fullDay) ? ' Avmarkera hela speldagen först för att välja enskilda lag.' : ''}</p>
+                                </div>
+                              </details>
+                              </div>;
+                            })}
                           </div>
                         ) : (
                           <div className="mt-2 flex flex-wrap gap-2">

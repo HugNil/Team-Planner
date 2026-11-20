@@ -1,5 +1,6 @@
 'use client';
 
+import { useSession } from 'next-auth/react';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type Player = {
@@ -95,6 +96,7 @@ function isDeadlinePassed(startsOn: string) {
 }
 
 export default function Home() {
+  const { status: sessionStatus } = useSession();
   const [clubCode, setClubCode] = useState('');
   const [activeCode, setActiveCode] = useState('');
   const [data, setData] = useState<BoardData | null>(null);
@@ -235,10 +237,10 @@ export default function Home() {
         {data && (
           <div className="mb-5 flex items-center justify-between gap-3">
             <a
-              href="/"
+              href={sessionStatus === 'authenticated' ? '/admin' : '/'}
               className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:text-slate-950"
             >
-              ← Hem
+              {sessionStatus === 'authenticated' ? '← Till admin' : '← Hem'}
             </a>
             <p className="shrink-0 text-sm font-semibold text-slate-500">
               {data.rounds.length} omgångar
